@@ -31,8 +31,7 @@ constexpr uint32_t kSvc0Insn = 0xD4000001u;
 struct SysliftSyscallSite {
   uint64_t site_vaddr;
   uint32_t sys_nr;
-  uint32_t reserved;
-};
+} __attribute__((packed));
 
 struct Options {
   bool allow_all = false;
@@ -352,12 +351,10 @@ static bool parse_syscall_table(const char *path,
     SysliftSyscallSite site{};
     site.site_vaddr = read_u64_le(table + rec);
     site.sys_nr = read_u32_le(table + rec + 8);
-    site.reserved = read_u32_le(table + rec + 12);
     sites->push_back(site);
-    std::fprintf(stderr,
-                 "table[%zu] site_vaddr=0x%016" PRIx64 " sys_nr=%" PRIu32
-                 " reserved=%" PRIu32 "\n",
-                 i, site.site_vaddr, site.sys_nr, site.reserved);
+    std::fprintf(stderr, "table[%zu] site_vaddr=0x%016" PRIx64 " sys_nr=%" PRIu32
+                         "\n",
+                 i, site.site_vaddr, site.sys_nr);
   }
 
   return true;

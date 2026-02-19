@@ -172,10 +172,8 @@ static std::string buildSectionEntryAsm(StringRef SectionName,
   std::string Asm;
   raw_string_ostream OS(Asm);
   OS << "\t.pushsection " << SectionName << ",\"a\",@progbits\n";
-  OS << "\t.p2align 3\n";
   OS << "\t.xword " << SiteLabel << "\n";
   OS << "\t.word " << SysNr << "\n";
-  OS << "\t.word 0\n";
   OS << "\t.popsection\n";
   return Asm;
 }
