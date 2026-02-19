@@ -19,6 +19,7 @@ Contract surface can include:
 - Filesystem behavior: path-level and mode-level intent (read/write/create/delete/rename, metadata operations).
 - Network behavior: domains, protocols, ports, DNS resolution behavior.
 - Process behavior: `execve`, `fork/clone`, signals, `ptrace`, `setns`, `setuid`, `capset`, and related process-control APIs.
+- Control-flow integrity behavior: constrain indirect control-flow targets to approved sets.
 - Information-flow behavior (taint contracts): constrain how sensitive data can flow from sources (secrets, PII, credentials, key material) to sinks (logs, network, files, IPC, diagnostics).
 
 ## Quick Demo
@@ -88,14 +89,16 @@ This gives load-time verification and activation of kernel API surface without r
 ## Loader Usage
 
 ```bash
-build/loader [--debug] [--allow <nr>...] [--deny <nr>...] <elf-file>
+build/loader [--debug] [--hook <nr>...] [--allow <nr>...] [--deny <nr>...] <elf-file>
 ```
 
 Policy:
+- `--hook`: patch listed syscall numbers to a loader stub that dispatches to the framework hook handler
 - default (no flags): allow all recorded syscalls (patch all listed sites)
 - `--allow`: only patch listed syscall numbers
 - `--deny`: patch everything except listed syscall numbers
 - passing both `--allow` and `--deny` is an error
+- `--hook` takes precedence over `--allow`/`--deny` for matching syscall numbers
 - in `--allow` mode, include `93` (`exit`) if you want normal program termination
 
 `--debug` prints parsed `.syslift` entries (`vals=[nr,arg1..arg6]` with `?` for unknown), per-site patch decisions, and entry address.

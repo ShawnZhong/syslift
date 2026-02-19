@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstring>
 #include <limits>
@@ -54,6 +55,34 @@ bool is_in_exec_segment(const Image &image, uintptr_t addr) {
     }
   }
   return false;
+}
+
+uintptr_t try_map_fixed_page(uintptr_t addr, size_t page_size) {
+  void *p = mmap(reinterpret_cast<void *>(addr), page_size, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  if (p == MAP_FAILED) {
+    return 0;
+  }
+  return reinterpret_cast<uintptr_t>(p);
+}
+
+void patch_aarch64_insn(uintptr_t site_addr, uint32_t insn_word) {
+  auto *insn = reinterpret_cast<uint32_t *>(site_addr);
+  *insn = insn_word;
+  __builtin___clear_cache(reinterpret_cast<char *>(insn),
+                          reinterpret_cast<char *>(insn) + sizeof(uint32_t));
+}
+
+uint32_t encode_bl_insn(uintptr_t from, uintptr_t to) {
+  const int64_t delta = static_cast<int64_t>(to) - static_cast<int64_t>(from);
+  if ((delta & 0x3LL) != 0) {
+    throw std::runtime_error("hook target not 4-byte aligned");
+  }
+  const int64_t imm26 = delta >> 2;
+  if (imm26 < -(1LL << 25) || imm26 > ((1LL << 25) - 1)) {
+    throw std::runtime_error("hook target out of BL range");
+  }
+  return kBlInsnBase | (static_cast<uint32_t>(imm26) & 0x03FFFFFFu);
 }
 
 } // namespace
@@ -135,7 +164,7 @@ Image map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed) {
                load_bias + parsed.ehdr.e_entry, std::move(segments)};
 }
 
-void patch_syscall(const SysliftSyscallSite &site, const Image &image) {
+void patch_syscall_to_svc(const SysliftSyscallSite &site, const Image &image) {
   uintptr_t site_addr = image.load_bias + static_cast<uintptr_t>(site.site_vaddr);
 
   if ((site_addr & 0x3U) != 0U) {
@@ -145,10 +174,73 @@ void patch_syscall(const SysliftSyscallSite &site, const Image &image) {
     throw std::runtime_error("syscall site outside executable segment");
   }
 
-  auto *insn = reinterpret_cast<uint32_t *>(site_addr);
-  *insn = kSvc0Insn;
-  __builtin___clear_cache(reinterpret_cast<char *>(insn),
-                          reinterpret_cast<char *>(insn) + sizeof(uint32_t));
+  patch_aarch64_insn(site_addr, kSvc0Insn);
+}
+
+uintptr_t install_hook_stub(const Image &image, uintptr_t hook_entry) {
+  uintptr_t stub_page = 0;
+  const uintptr_t after = image.mapping_start + image.mapping_size;
+  if (after <= std::numeric_limits<uintptr_t>::max() - image.page_size) {
+    stub_page = try_map_fixed_page(after, image.page_size);
+  }
+  if (stub_page == 0 && image.mapping_start >= image.page_size) {
+    stub_page = try_map_fixed_page(image.mapping_start - image.page_size,
+                                   image.page_size);
+  }
+  if (stub_page == 0) {
+    void *p = mmap(nullptr, image.page_size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+      throw std::runtime_error(std::string("hook stub mmap failed: ") +
+                               std::strerror(errno));
+    }
+    stub_page = reinterpret_cast<uintptr_t>(p);
+  }
+
+  static constexpr std::array<uint32_t, 9> kHookStubInsns = {
+      0xD10043FFu, // sub sp, sp, #16
+      0xF90003FEu, // str x30, [sp]
+      0xAA0803E6u, // mov x6, x8
+      0xD10013C7u, // sub x7, x30, #4
+      0x580000B0u, // ldr x16, #0x14
+      0xD63F0200u, // blr x16
+      0xF94003FEu, // ldr x30, [sp]
+      0x910043FFu, // add sp, sp, #16
+      0xD65F03C0u, // ret
+  };
+  constexpr size_t kCodeSize = kHookStubInsns.size() * sizeof(uint32_t);
+  constexpr size_t kTotalSize = kCodeSize + sizeof(uint64_t);
+  if (kTotalSize > image.page_size) {
+    throw std::runtime_error("hook stub too large");
+  }
+
+  auto *stub = reinterpret_cast<uint8_t *>(stub_page);
+  std::memcpy(stub, kHookStubInsns.data(), kCodeSize);
+  *reinterpret_cast<uint64_t *>(stub + kCodeSize) = hook_entry;
+  __builtin___clear_cache(reinterpret_cast<char *>(stub),
+                          reinterpret_cast<char *>(stub) + kTotalSize);
+
+  if (mprotect(reinterpret_cast<void *>(stub_page), image.page_size,
+               PROT_READ | PROT_EXEC) != 0) {
+    throw std::runtime_error(std::string("hook stub mprotect failed: ") +
+                             std::strerror(errno));
+  }
+
+  return stub_page;
+}
+
+void patch_syscall_to_hook(const SysliftSyscallSite &site, const Image &image,
+                           uintptr_t hook_stub_addr) {
+  uintptr_t site_addr = image.load_bias + static_cast<uintptr_t>(site.site_vaddr);
+
+  if ((site_addr & 0x3U) != 0U) {
+    throw std::runtime_error("invalid syscall site alignment");
+  }
+  if (!is_in_exec_segment(image, site_addr)) {
+    throw std::runtime_error("syscall site outside executable segment");
+  }
+
+  patch_aarch64_insn(site_addr, encode_bl_insn(site_addr, hook_stub_addr));
 }
 
 void apply_segment_protections(const Image &image) {

@@ -15,6 +15,7 @@
 namespace {
 
 struct Options {
+  std::vector<uint32_t> hook;
   std::vector<uint32_t> allow;
   std::vector<uint32_t> deny;
   bool debug = false;
@@ -25,6 +26,8 @@ Options parse_options(int argc, char **argv) {
   cxxopts::Options parser(argv[0], "syslift loader");
   parser.positional_help("<elf-file>");
   parser.add_options()(
+      "hook", "Hook syscall numbers (comma-separated or repeated)",
+      cxxopts::value<std::vector<uint32_t>>())(
       "allow", "Allow-list syscall numbers (comma-separated or repeated)",
       cxxopts::value<std::vector<uint32_t>>())(
       "deny", "Deny-list syscall numbers (comma-separated or repeated)",
@@ -53,6 +56,9 @@ Options parse_options(int argc, char **argv) {
     }
 
     Options opts{};
+    if (result.count("hook") != 0) {
+      opts.hook = result["hook"].as<std::vector<uint32_t>>();
+    }
     if (allow_mode) {
       opts.allow = result["allow"].as<std::vector<uint32_t>>();
     }
@@ -85,6 +91,7 @@ int main(int argc, char **argv) {
     syslift::reject_if_unknown_syscall_nr(parsed);
 
     syslift::Image image = syslift::map_image(file, parsed);
+    uintptr_t hook_stub_addr = 0;
 
     auto contains = [](const std::vector<uint32_t> &list, uint32_t value) {
       return std::find(list.begin(), list.end(), value) != list.end();
@@ -92,6 +99,21 @@ int main(int argc, char **argv) {
 
     for (const syslift::SysliftSyscallSite &site : parsed.syscall_sites) {
       const uint32_t sys_nr = static_cast<uint32_t>(site.values[0]);
+      if (contains(opts.hook, sys_nr)) {
+        if (hook_stub_addr == 0) {
+          hook_stub_addr = syslift::install_hook_stub(
+              image, reinterpret_cast<uintptr_t>(&syslift::syslift_framework_hook));
+        }
+        syslift::patch_syscall_to_hook(site, image, hook_stub_addr);
+        if (opts.debug) {
+          std::fprintf(stderr,
+                       "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
+                       " action=HOOKED\n",
+                       site.site_vaddr, sys_nr);
+        }
+        continue;
+      }
+
       bool should_patch = true;
       if (!opts.allow.empty()) {
         should_patch = contains(opts.allow, sys_nr);
@@ -108,7 +130,7 @@ int main(int argc, char **argv) {
         continue;
       }
 
-      syslift::patch_syscall(site, image);
+      syslift::patch_syscall_to_svc(site, image);
       if (opts.debug) {
         std::fprintf(stderr,
                      "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32

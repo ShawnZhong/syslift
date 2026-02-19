@@ -10,6 +10,7 @@
 namespace syslift {
 
 inline constexpr uint32_t kSvc0Insn = 0xD4000001u;
+inline constexpr uint32_t kBlInsnBase = 0x94000000u;
 
 struct Segment {
   uintptr_t start = 0;
@@ -38,7 +39,12 @@ struct Image {
 
 Image map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed);
 
-void patch_syscall(const SysliftSyscallSite &site, const Image &image);
+void patch_syscall_to_svc(const SysliftSyscallSite &site, const Image &image);
+
+uintptr_t install_hook_stub(const Image &image, uintptr_t hook_entry);
+
+void patch_syscall_to_hook(const SysliftSyscallSite &site, const Image &image,
+                           uintptr_t hook_stub_addr);
 
 void apply_segment_protections(const Image &image);
 

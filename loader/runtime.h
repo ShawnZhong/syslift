@@ -24,6 +24,10 @@ struct RuntimeStack {
 
 RuntimeStack setup_runtime_stack(const char *argv0);
 
+long syslift_framework_hook(uint64_t arg0, uint64_t arg1, uint64_t arg2,
+                            uint64_t arg3, uint64_t arg4, uint64_t arg5,
+                            uint64_t sys_nr, uint64_t site_vaddr);
+
 [[noreturn]] void jump_to_entry(uintptr_t entry, uintptr_t entry_sp);
 
 } // namespace syslift
