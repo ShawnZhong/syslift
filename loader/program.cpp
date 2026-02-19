@@ -11,6 +11,7 @@
 #include <cstring>
 #include <inttypes.h>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -23,12 +24,16 @@
 namespace syslift {
 namespace {
 
-constexpr uint32_t kSvc0Insn = 0xD4000001u;
+constexpr std::array<uint8_t, 4> kAArch64SvcInsn = {0x01, 0x00, 0x00, 0xD4};
 constexpr std::array<uint8_t, 2> kX86SyscallInsn = {0x0F, 0x05};
-constexpr size_t kX86PatchSlotSize = 8;
-constexpr std::array<uint8_t, kX86PatchSlotSize> kX86PatchedSyscallInsn = {
+constexpr size_t kSyscallPatchSlotSize = 8;
+constexpr std::array<uint8_t, kSyscallPatchSlotSize> kAArch64PatchedSyscallInsn = {
+    0x01, 0x00, 0x00, 0xD4, 0x1F, 0x20, 0x03, 0xD5};
+constexpr std::array<uint8_t, kSyscallPatchSlotSize> kX86PatchedSyscallInsn = {
     0x0F, 0x05, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
-static_assert(kX86PatchedSyscallInsn.size() == kX86PatchSlotSize,
+static_assert(kAArch64PatchedSyscallInsn.size() == kSyscallPatchSlotSize,
+              "AArch64 syscall patch slot must stay 8 bytes");
+static_assert(kX86PatchedSyscallInsn.size() == kSyscallPatchSlotSize,
               "x86 syscall patch slot must stay 8 bytes");
 constexpr uint32_t kBlInsnBase = 0x94000000u;
 
@@ -96,12 +101,33 @@ const char *arch_name(ProgramArch arch) {
   throw std::runtime_error("unsupported arch");
 }
 
-size_t syscall_patch_size(ProgramArch arch) {
+template <size_t N>
+std::optional<size_t> find_raw_syscall_offset(
+    const Segment &segment, const std::array<uint8_t, N> &insn, size_t start_off,
+    size_t step) {
+  if (N == 0 || step == 0 || start_off >= segment.data.size()) {
+    return std::nullopt;
+  }
+  if (segment.data.size() < N) {
+    return std::nullopt;
+  }
+
+  const uint8_t *text = segment.data.data();
+  for (size_t off = start_off; off + N <= segment.data.size(); off += step) {
+    if (std::memcmp(text + off, insn.data(), N) == 0) {
+      return off;
+    }
+  }
+  return std::nullopt;
+}
+
+const std::array<uint8_t, kSyscallPatchSlotSize> &
+patched_syscall_slot(ProgramArch arch) {
   switch (arch) {
   case ProgramArch::AArch64:
-    return sizeof(uint32_t);
+    return kAArch64PatchedSyscallInsn;
   case ProgramArch::X86_64:
-    return kX86PatchSlotSize;
+    return kX86PatchedSyscallInsn;
   }
   throw std::runtime_error("unsupported arch");
 }
@@ -225,47 +251,24 @@ void reject_if_executable_contains_syscall(const Program &program,
     return;
   }
 
-  const uint8_t *text = segment.data.data();
+  std::optional<size_t> off;
   if (program.arch == ProgramArch::AArch64) {
-    const size_t start_off =
-        static_cast<size_t>((4 - (segment.start & 0x3U)) & 0x3U);
-    for (size_t off = start_off; off + sizeof(uint32_t) <= segment.data.size();
-         off += 4) {
-      uint32_t insn = 0;
-      std::memcpy(&insn, text + off, sizeof(insn));
-      if (insn != kSvc0Insn) {
-        continue;
-      }
-
-      const uint64_t site_vaddr = segment.start + static_cast<uint64_t>(off);
-      throw std::runtime_error(
-          "untrusted input: syscall instruction found in executable segment "
-          "(vaddr=" +
-          hex_u64(site_vaddr) + ", arch=" + arch_name(program.arch) + ")");
-    }
-    return;
+    const size_t start_off = static_cast<size_t>((4 - (segment.start & 0x3U)) & 0x3U);
+    off = find_raw_syscall_offset(segment, kAArch64SvcInsn, start_off, 4);
+  } else if (program.arch == ProgramArch::X86_64) {
+    off = find_raw_syscall_offset(segment, kX86SyscallInsn, 0, 1);
+  } else {
+    throw std::runtime_error("unsupported arch");
   }
 
-  if (program.arch == ProgramArch::X86_64) {
-    if (segment.data.size() < kX86SyscallInsn.size()) {
-      return;
-    }
-    for (size_t off = 0; off + kX86SyscallInsn.size() <= segment.data.size();
-         ++off) {
-      if (std::memcmp(text + off, kX86SyscallInsn.data(),
-                      kX86SyscallInsn.size()) != 0) {
-        continue;
-      }
-      const uint64_t site_vaddr = segment.start + static_cast<uint64_t>(off);
-      throw std::runtime_error(
-          "untrusted input: syscall instruction found in executable segment "
-          "(vaddr=" +
-          hex_u64(site_vaddr) + ", arch=" + arch_name(program.arch) + ")");
-    }
+  if (!off.has_value()) {
     return;
   }
-
-  throw std::runtime_error("unsupported arch");
+  const uint64_t site_vaddr = segment.start + static_cast<uint64_t>(off.value());
+  throw std::runtime_error(
+      "untrusted input: syscall instruction found in executable segment "
+      "(vaddr=" +
+      hex_u64(site_vaddr) + ", arch=" + arch_name(program.arch) + ")");
 }
 
 void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site) {
@@ -283,18 +286,9 @@ void patch_syscall_to_svc(Program &parsed, const SysliftSyscallSite &site) {
     throw std::runtime_error("invalid syscall site alignment");
   }
   auto [seg, off] =
-      find_executable_site(parsed, site.site_vaddr, syscall_patch_size(parsed.arch));
-
-  if (parsed.arch == ProgramArch::AArch64) {
-    std::memcpy(seg->data.data() + off, &kSvc0Insn, sizeof(kSvc0Insn));
-    return;
-  }
-  if (parsed.arch == ProgramArch::X86_64) {
-    std::memcpy(seg->data.data() + off, kX86PatchedSyscallInsn.data(),
-                kX86PatchedSyscallInsn.size());
-    return;
-  }
-  throw std::runtime_error("unsupported arch");
+      find_executable_site(parsed, site.site_vaddr, kSyscallPatchSlotSize);
+  const auto &slot = patched_syscall_slot(parsed.arch);
+  std::memcpy(seg->data.data() + off, slot.data(), slot.size());
 }
 
 void patch_syscall_to_hook(Program &parsed, const SysliftSyscallSite &site,
@@ -305,10 +299,12 @@ void patch_syscall_to_hook(Program &parsed, const SysliftSyscallSite &site,
   if ((site.site_vaddr & 0x3U) != 0U) {
     throw std::runtime_error("invalid syscall site alignment");
   }
-  auto [seg, off] = find_executable_site(parsed, site.site_vaddr, sizeof(uint32_t));
+  auto [seg, off] =
+      find_executable_site(parsed, site.site_vaddr, kSyscallPatchSlotSize);
   const uint32_t bl = encode_bl_insn(static_cast<uintptr_t>(site.site_vaddr),
                                      hook_stub_addr);
-  std::memcpy(seg->data.data() + off, &bl, sizeof(bl));
+  const std::array<uint32_t, 2> hook_insns = {bl, 0xD503201Fu};
+  std::memcpy(seg->data.data() + off, hook_insns.data(), sizeof(hook_insns));
 }
 
 uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {

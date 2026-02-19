@@ -289,7 +289,10 @@ static std::string buildPatchedSiteAsm(StringRef SiteLabel, TargetArch Arch) {
   raw_string_ostream OS(Asm);
   OS << SiteLabel << ":\n";
   if (Arch == TargetArch::AArch64) {
+    // Reserve a fixed 8-byte patch slot:
+    //   mov x0, #-ENOSYS (4 bytes) + nop (4 bytes)
     OS << "\tmov x0, #" << -ENOSYS << "\n";
+    OS << "\tnop\n";
   } else {
     // Reserve a fixed 8-byte patch slot:
     //   mov rax, imm32 (7 bytes) + nop (1 byte)
@@ -367,10 +370,7 @@ public:
           Changed = true;
           if ((ArgMeta.KnownMask & SysliftNrBit) == 0u) {
             WithColor::warning(errs(), "SysliftCollectSyscallsPass")
-                << "unable to prove constant "
-                << (Arch == TargetArch::AArch64 ? "x8" : "rax")
-                << " for syscall site in function "
-                << F.getName()
+                << "unable to prove constant syscall number"
                 << "; recorded site with nr unknown for loader rejection\n";
           }
 
