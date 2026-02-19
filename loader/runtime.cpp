@@ -142,7 +142,8 @@ void protect_image(const Program &program, uintptr_t load_bias) {
   }
 }
 
-RuntimeStack setup_runtime_stack(const char *argv0) {
+uintptr_t setup_runtime_stack(const std::string &arg0,
+                              const std::vector<std::string> &args) {
   constexpr size_t kStackSize = 1UL << 20;
 
   void *mem = mmap(nullptr, kStackSize, PROT_READ | PROT_WRITE,
@@ -154,20 +155,27 @@ RuntimeStack setup_runtime_stack(const char *argv0) {
 
   uintptr_t sp = reinterpret_cast<uintptr_t>(mem) + kStackSize;
   sp &= ~static_cast<uintptr_t>(0xFUL);
+  const size_t argc = 1 + args.size();
+  if ((argc % 2U) == 0U) {
+    sp -= sizeof(uint64_t);
+  }
 
   auto push_u64 = [&](uint64_t v) {
     sp -= sizeof(uint64_t);
     *reinterpret_cast<uint64_t *>(sp) = v;
   };
 
-  push_u64(0);
-  push_u64(0);
-  push_u64(0);
-  push_u64(0);
-  push_u64(reinterpret_cast<uintptr_t>(argv0));
-  push_u64(1);
+  push_u64(0); // auxv value
+  push_u64(0); // auxv type (AT_NULL)
+  push_u64(0); // envp terminator
+  push_u64(0); // argv terminator
+  for (auto it = args.rbegin(); it != args.rend(); ++it) {
+    push_u64(reinterpret_cast<uintptr_t>(it->c_str()));
+  }
+  push_u64(reinterpret_cast<uintptr_t>(arg0.c_str()));
+  push_u64(static_cast<uint64_t>(argc));
 
-  return RuntimeStack{mem, kStackSize, sp};
+  return sp;
 }
 
 long syslift_framework_hook(uint64_t arg0, uint64_t arg1, uint64_t arg2,
@@ -197,12 +205,12 @@ long syslift_framework_hook(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 #endif
 }
 
-[[noreturn]] void jump_to_entry(uintptr_t entry, uintptr_t entry_sp) {
+[[noreturn]] void jump_to_entry(uintptr_t entry_pc, uintptr_t entry_sp) {
   __asm__ volatile(
       "mov sp, %0\n"
       "br %1\n"
       :
-      : "r"(entry_sp), "r"(entry)
+      : "r"(entry_sp), "r"(entry_pc)
       : "memory");
   __builtin_unreachable();
 }

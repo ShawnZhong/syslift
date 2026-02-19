@@ -45,7 +45,7 @@ site_vaddr=0x4002f4 sys_nr=129 action=ENOSYS
 site_vaddr=0x4004e4 sys_nr=172 action=PATCHED
 site_vaddr=0x4004f4 sys_nr=129 action=ENOSYS
 site_vaddr=0x4002cc sys_nr=172 action=PATCHED
-start executing: entry=0x4002c0
+start executing: entry_pc=0x4002c0
 + exit=0
 
 Running: `build/loader --hook 172,93 build/getpid`
@@ -71,8 +71,16 @@ Running: `build/loader --deny 172 build/print_pid`
 pid: -38
 - exit=1
 
+Running: `build/loader build/print_args -- one two three`
+argc: 4
+argv[0]: build/print_args
+argv[1]: one
+argv[2]: two
+argv[3]: three
++ exit=0
+
 Running: `build/loader build/reject`
-untrusted input: unknown syscall nr in .syslift (site_vaddr=0x400288)
+untrusted input: unknown syscall nr in .syslift (site_vaddr=0x400290)
 - exit=1
 ```
 
@@ -94,7 +102,7 @@ This gives load-time verification and activation of kernel API surface without r
 ## Loader Usage
 
 ```bash
-build/loader [--debug] [--hook <nr>...] [--allow <nr>...] [--deny <nr>...] <elf-file>
+build/loader [--debug] [--hook <nr>...] [--allow <nr>...] [--deny <nr>...] <elf-file> [-- <args...>]
 ```
 
 Policy:
@@ -105,6 +113,7 @@ Policy:
 - passing both `--allow` and `--deny` is an error
 - `--hook` takes precedence over `--allow`/`--deny` for matching syscall numbers
 - in `--allow` mode, include `93` (`exit`) if you want normal program termination
+- arguments after `--` are passed to the loaded program as `argv[1..]` (`argv[0]` is `<elf-file>`)
 
 `--debug` prints parsed `.syslift` entries (`vals=[nr,arg1..arg6]` with `?` for unknown), per-site patch decisions, and entry address.
 

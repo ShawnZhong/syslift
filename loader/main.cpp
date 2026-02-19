@@ -17,13 +17,14 @@ struct Options {
   std::vector<uint32_t> hook;
   std::vector<uint32_t> allow;
   std::vector<uint32_t> deny;
+  std::vector<std::string> exec_args;
   bool debug = false;
   std::string elf_path;
 };
 
 Options parse_options(int argc, char **argv) {
   cxxopts::Options parser(argv[0], "syslift loader");
-  parser.positional_help("<elf-file>");
+  parser.positional_help("<elf-file> [-- <args...>]");
   parser.add_options()(
       "hook", "Hook syscall numbers (comma-separated or repeated)",
       cxxopts::value<std::vector<uint32_t>>())(
@@ -48,7 +49,6 @@ Options parse_options(int argc, char **argv) {
       std::fprintf(stderr, "use either --allow or --deny, not both\n");
       std::exit(1);
     }
-
     if (result.count("elf") == 0) {
       std::fprintf(stderr, "missing <elf-file>\n%s\n", parser.help().c_str());
       std::exit(1);
@@ -64,6 +64,7 @@ Options parse_options(int argc, char **argv) {
     if (deny_mode) {
       opts.deny = result["deny"].as<std::vector<uint32_t>>();
     }
+    opts.exec_args = result.unmatched();
     opts.debug = result.count("debug") != 0;
     opts.elf_path = result["elf"].as<std::string>();
     return opts;
@@ -91,36 +92,25 @@ void patch_program_syscall(syslift::Program &program,
                            const syslift::SysliftSyscallSite &site,
                            const Options &opts, uintptr_t hook_stub_addr) {
   const uint32_t sys_nr = static_cast<uint32_t>(site.values[0]);
+  const char *action;
   if (contains(opts.hook, sys_nr)) {
     syslift::patch_syscall_to_hook(program, site, hook_stub_addr);
-    if (opts.debug) {
-      std::fprintf(
-          stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32 " action=HOOKED\n",
-          site.site_vaddr, sys_nr);
-    }
-    return;
+    action = "HOOKED";
+  } else if (should_patch_syscall(opts, sys_nr)) {
+    syslift::patch_syscall_to_svc(program, site);
+    action = "PATCHED";
+  } else {
+    action = "ENOSYS";
   }
 
-  if (!should_patch_syscall(opts, sys_nr)) {
-    if (opts.debug) {
-      std::fprintf(
-          stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32 " action=ENOSYS\n",
-          site.site_vaddr, sys_nr);
-    }
-    return;
-  }
-
-  syslift::patch_syscall_to_svc(program, site);
   if (opts.debug) {
-    std::fprintf(stderr,
-                 "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32 " action=PATCHED\n",
-                 site.site_vaddr, sys_nr);
+    std::fprintf(stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
+                         " action=%s\n",
+                 site.site_vaddr, sys_nr, action);
   }
 }
 
 void execute_program(const Options &opts) {
-  const char *elf_path = opts.elf_path.c_str();
-
   syslift::Program program = syslift::parse_elf(opts.elf_path);
   if (opts.debug) {
     syslift::dump_syslift_table(program);
@@ -144,13 +134,14 @@ void execute_program(const Options &opts) {
   const uintptr_t load_bias = syslift::map_image(program);
   syslift::protect_image(program, load_bias);
 
-  syslift::RuntimeStack runtime_stack = syslift::setup_runtime_stack(elf_path);
+  const uintptr_t entry_sp =
+      syslift::setup_runtime_stack(opts.elf_path, opts.exec_args);
 
-  const uintptr_t entry = load_bias + program.entry;
+  const uintptr_t entry_pc = load_bias + program.entry;
   if (opts.debug) {
-    std::fprintf(stderr, "start executing: entry=0x%" PRIxPTR "\n", entry);
+    std::fprintf(stderr, "start executing: entry_pc=0x%" PRIxPTR "\n", entry_pc);
   }
-  syslift::jump_to_entry(entry, runtime_stack.entry_sp);
+  syslift::jump_to_entry(entry_pc, entry_sp);
 }
 
 } // namespace
