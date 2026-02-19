@@ -5,12 +5,20 @@ make
 
 run() {
   echo
-  echo "Running: $*"
+  printf "\033[34mRunning: \`$*\`\033[0m\n"
   "$@"
-  echo "exit=$?"
+  rc=$?
+  if [[ $rc -eq 0 ]]; then
+    printf "\033[32mexit=%d\033[0m\n" "$rc"
+  else
+    printf "\033[31mexit=%d\033[0m\n" "$rc"
+  fi
 }
 
-run build/getpid.elf
-run build/loader build/getpid.elf
-run build/loader --allow 172 build/getpid.elf
-run build/loader --deny 172 build/getpid.elf
+run build/getpid
+run build/loader --debug --allow 172 build/getpid
+run build/loader --deny 172 build/getpid
+
+run build/write
+run build/loader build/write
+run build/loader --deny 64 build/write

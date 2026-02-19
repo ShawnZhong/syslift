@@ -33,6 +33,7 @@ namespace {
 
 static constexpr char SysliftSyscallTableSection[] = ".syslift";
 static constexpr uint32_t AArch64SysExit = 93;
+static constexpr int64_t AArch64NegEnosys = -38;
 
 static cl::opt<std::string> SysliftSectionName(
     "syslift-section",
@@ -243,11 +244,11 @@ public:
             SysliftSectionName, SiteLabel, SysNr.value()));
 
         if (isSvcInlineAsm(MI)) {
-          MI.getOperand(0).ChangeToES("mov x0, #38");
+          MI.getOperand(0).ChangeToES("mov x0, #-38");
         } else {
           BuildMI(MBB, SiteIt, MI.getDebugLoc(), TII->get(MovI64ImmOpcode),
                   X0Reg)
-              .addImm(38);
+              .addImm(AArch64NegEnosys);
           MI.eraseFromParent();
         }
 

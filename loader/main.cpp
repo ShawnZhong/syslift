@@ -17,6 +17,7 @@ namespace {
 struct Options {
   std::vector<uint32_t> allow;
   std::vector<uint32_t> deny;
+  bool debug = false;
   std::string elf_path;
 };
 
@@ -27,7 +28,8 @@ Options parse_options(int argc, char **argv) {
       "allow", "Allow-list syscall numbers (comma-separated or repeated)",
       cxxopts::value<std::vector<uint32_t>>())(
       "deny", "Deny-list syscall numbers (comma-separated or repeated)",
-      cxxopts::value<std::vector<uint32_t>>())("h,help", "Show help")(
+      cxxopts::value<std::vector<uint32_t>>())("debug", "Enable debug logging")(
+      "h,help", "Show help")(
       "elf", "ELF file", cxxopts::value<std::string>());
   parser.parse_positional({"elf"});
 
@@ -57,6 +59,7 @@ Options parse_options(int argc, char **argv) {
     if (deny_mode) {
       opts.deny = result["deny"].as<std::vector<uint32_t>>();
     }
+    opts.debug = result.count("debug") != 0;
     opts.elf_path = result["elf"].as<std::string>();
     return opts;
   } catch (const cxxopts::exceptions::exception &e) {
@@ -94,17 +97,21 @@ int main(int argc, char **argv) {
       }
 
       if (!should_patch) {
-        std::fprintf(stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
-                             " action=ENOSYS\n",
-                     site.site_vaddr, site.sys_nr);
+        if (opts.debug) {
+          std::fprintf(stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
+                               " action=ENOSYS\n",
+                       site.site_vaddr, site.sys_nr);
+        }
         continue;
       }
 
       syslift::patch_syscall(site, image);
-      std::fprintf(stderr,
-                   "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
-                   " action=PATCHED\n",
-                   site.site_vaddr, site.sys_nr);
+      if (opts.debug) {
+        std::fprintf(stderr,
+                     "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
+                     " action=PATCHED\n",
+                     site.site_vaddr, site.sys_nr);
+      }
     }
 
     syslift::apply_segment_protections(image);
@@ -114,7 +121,9 @@ int main(int argc, char **argv) {
     syslift::setup_runtime_stack(elf_path, &runtime_stack, &entry_sp);
 
     const uintptr_t entry = image.entry;
-    std::fprintf(stderr, "start executing: entry=0x%" PRIxPTR "\n", entry);
+    if (opts.debug) {
+      std::fprintf(stderr, "start executing: entry=0x%" PRIxPTR "\n", entry);
+    }
     image.release();
     runtime_stack.release();
     syslift::jump_to_entry(entry, entry_sp);
