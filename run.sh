@@ -27,4 +27,4 @@ run build/loader --deny 172 build/print_pid
 
 run build/loader build/print_args -- one two three
 
-run build/loader build/reject
+run build/loader --debug build/reject

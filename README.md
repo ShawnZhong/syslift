@@ -79,7 +79,9 @@ argv[2]: two
 argv[3]: three
 + exit=0
 
-Running: `build/loader build/reject`
+Running: `build/loader --debug build/reject`
+.syslift entries=7
+table[0] site_vaddr=0x400290 vals=[  ?,   1,   2,   3,   4,   5,   6]
 untrusted input: unknown syscall nr in .syslift (site_vaddr=0x400290)
 - exit=1
 ```
