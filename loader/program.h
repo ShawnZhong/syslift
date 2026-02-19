@@ -11,6 +11,11 @@ inline constexpr const char *kSyscallTableSection = ".syslift";
 inline constexpr uint32_t kSyscallValueCount = 7;
 inline constexpr uint32_t kSyscallNrBit = 1u << 0;
 
+enum class ProgramArch {
+  AArch64,
+  X86_64,
+};
+
 struct SysliftSyscallSite {
   uint64_t site_vaddr;
   uint32_t known_mask;
@@ -25,6 +30,7 @@ struct Segment {
 };
 
 struct Program {
+  ProgramArch arch = ProgramArch::AArch64;
   uint64_t entry = 0;
   std::vector<Segment> segments;
   std::vector<SysliftSyscallSite> syscall_sites;
@@ -32,7 +38,8 @@ struct Program {
 
 Program parse_elf(const std::string &path);
 
-void reject_if_executable_contains_svc(const Segment &segment);
+void reject_if_executable_contains_syscall(const Program &program,
+                                           const Segment &segment);
 
 void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site);
 

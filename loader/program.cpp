@@ -24,6 +24,10 @@ namespace syslift {
 namespace {
 
 constexpr uint32_t kSvc0Insn = 0xD4000001u;
+constexpr std::array<uint8_t, 2> kX86SyscallInsn = {0x0F, 0x05};
+constexpr std::array<uint8_t, 8> kX86PatchedSyscallInsn = {0x0F, 0x05, 0x90,
+                                                            0x90, 0x90, 0x90,
+                                                            0x90, 0x90};
 constexpr uint32_t kBlInsnBase = 0x94000000u;
 
 uintptr_t align_down(uintptr_t value, size_t align) {
@@ -80,14 +84,35 @@ std::string hex_u64(uint64_t value) {
   return os.str();
 }
 
+const char *arch_name(ProgramArch arch) {
+  switch (arch) {
+  case ProgramArch::AArch64:
+    return "AArch64";
+  case ProgramArch::X86_64:
+    return "x86_64";
+  }
+  throw std::runtime_error("unsupported arch");
+}
+
+size_t syscall_patch_size(ProgramArch arch) {
+  switch (arch) {
+  case ProgramArch::AArch64:
+    return sizeof(uint32_t);
+  case ProgramArch::X86_64:
+    return kX86PatchedSyscallInsn.size();
+  }
+  throw std::runtime_error("unsupported arch");
+}
+
 std::pair<Segment *, size_t> find_executable_site(Program &parsed,
-                                                   uint64_t site_vaddr) {
+                                                   uint64_t site_vaddr,
+                                                   size_t patch_size) {
   for (Segment &seg : parsed.segments) {
     if ((seg.prot & PROT_EXEC) == 0 || site_vaddr < seg.start) {
       continue;
     }
     const uint64_t off = site_vaddr - seg.start;
-    if (off + sizeof(uint32_t) > seg.data.size()) {
+    if (off + patch_size > seg.data.size()) {
       continue;
     }
     return {&seg, static_cast<size_t>(off)};
@@ -136,9 +161,18 @@ Program parse_elf(const std::string &path) {
   }
 
   if (reader.get_class() != ELFIO::ELFCLASS64 ||
-      reader.get_encoding() != ELFIO::ELFDATA2LSB ||
-      reader.get_machine() != ELFIO::EM_AARCH64) {
-    throw std::runtime_error("unsupported ELF format (need AArch64 ELF64 LE)");
+      reader.get_encoding() != ELFIO::ELFDATA2LSB) {
+    throw std::runtime_error("unsupported ELF format (need ELF64 LE)");
+  }
+
+  ProgramArch arch;
+  if (reader.get_machine() == ELFIO::EM_AARCH64) {
+    arch = ProgramArch::AArch64;
+  } else if (reader.get_machine() == ELFIO::EM_X86_64) {
+    arch = ProgramArch::X86_64;
+  } else {
+    throw std::runtime_error(
+        "unsupported ELF machine (need AArch64 or x86_64)");
   }
   if (reader.get_type() != ELFIO::ET_EXEC) {
     throw std::runtime_error("unsupported ELF type (need EXEC)");
@@ -148,6 +182,7 @@ Program parse_elf(const std::string &path) {
   }
 
   Program parsed{};
+  parsed.arch = arch;
   parsed.entry = reader.get_entry();
 
   parsed.segments.reserve(reader.segments.size());
@@ -182,28 +217,53 @@ Program parse_elf(const std::string &path) {
   return parsed;
 }
 
-void reject_if_executable_contains_svc(const Segment &segment) {
-  if ((segment.prot & PROT_EXEC) == 0 ||
-      segment.data.size() < sizeof(uint32_t)) {
+void reject_if_executable_contains_syscall(const Program &program,
+                                           const Segment &segment) {
+  if ((segment.prot & PROT_EXEC) == 0 || segment.data.empty()) {
     return;
   }
 
   const uint8_t *text = segment.data.data();
-  const size_t start_off =
-      static_cast<size_t>((4 - (segment.start & 0x3U)) & 0x3U);
-  for (size_t off = start_off; off + sizeof(uint32_t) <= segment.data.size();
-       off += 4) {
-    uint32_t insn = 0;
-    std::memcpy(&insn, text + off, sizeof(insn));
-    if (insn != kSvc0Insn) {
-      continue;
-    }
+  if (program.arch == ProgramArch::AArch64) {
+    const size_t start_off =
+        static_cast<size_t>((4 - (segment.start & 0x3U)) & 0x3U);
+    for (size_t off = start_off; off + sizeof(uint32_t) <= segment.data.size();
+         off += 4) {
+      uint32_t insn = 0;
+      std::memcpy(&insn, text + off, sizeof(insn));
+      if (insn != kSvc0Insn) {
+        continue;
+      }
 
-    const uint64_t site_vaddr = segment.start + static_cast<uint64_t>(off);
-    throw std::runtime_error(
-        "untrusted input: svc #0 found in executable segment (vaddr=" +
-        hex_u64(site_vaddr) + ")");
+      const uint64_t site_vaddr = segment.start + static_cast<uint64_t>(off);
+      throw std::runtime_error(
+          "untrusted input: syscall instruction found in executable segment "
+          "(vaddr=" +
+          hex_u64(site_vaddr) + ", arch=" + arch_name(program.arch) + ")");
+    }
+    return;
   }
+
+  if (program.arch == ProgramArch::X86_64) {
+    if (segment.data.size() < kX86SyscallInsn.size()) {
+      return;
+    }
+    for (size_t off = 0; off + kX86SyscallInsn.size() <= segment.data.size();
+         ++off) {
+      if (std::memcmp(text + off, kX86SyscallInsn.data(),
+                      kX86SyscallInsn.size()) != 0) {
+        continue;
+      }
+      const uint64_t site_vaddr = segment.start + static_cast<uint64_t>(off);
+      throw std::runtime_error(
+          "untrusted input: syscall instruction found in executable segment "
+          "(vaddr=" +
+          hex_u64(site_vaddr) + ", arch=" + arch_name(program.arch) + ")");
+    }
+    return;
+  }
+
+  throw std::runtime_error("unsupported arch");
 }
 
 void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site) {
@@ -217,25 +277,42 @@ void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site) {
 }
 
 void patch_syscall_to_svc(Program &parsed, const SysliftSyscallSite &site) {
-  if ((site.site_vaddr & 0x3U) != 0U) {
+  if (parsed.arch == ProgramArch::AArch64 && (site.site_vaddr & 0x3U) != 0U) {
     throw std::runtime_error("invalid syscall site alignment");
   }
-  auto [seg, off] = find_executable_site(parsed, site.site_vaddr);
-  std::memcpy(seg->data.data() + off, &kSvc0Insn, sizeof(kSvc0Insn));
+  auto [seg, off] =
+      find_executable_site(parsed, site.site_vaddr, syscall_patch_size(parsed.arch));
+
+  if (parsed.arch == ProgramArch::AArch64) {
+    std::memcpy(seg->data.data() + off, &kSvc0Insn, sizeof(kSvc0Insn));
+    return;
+  }
+  if (parsed.arch == ProgramArch::X86_64) {
+    std::memcpy(seg->data.data() + off, kX86PatchedSyscallInsn.data(),
+                kX86PatchedSyscallInsn.size());
+    return;
+  }
+  throw std::runtime_error("unsupported arch");
 }
 
 void patch_syscall_to_hook(Program &parsed, const SysliftSyscallSite &site,
                            uintptr_t hook_stub_addr) {
+  if (parsed.arch != ProgramArch::AArch64) {
+    throw std::runtime_error("hook is only supported on AArch64");
+  }
   if ((site.site_vaddr & 0x3U) != 0U) {
     throw std::runtime_error("invalid syscall site alignment");
   }
-  auto [seg, off] = find_executable_site(parsed, site.site_vaddr);
+  auto [seg, off] = find_executable_site(parsed, site.site_vaddr, sizeof(uint32_t));
   const uint32_t bl = encode_bl_insn(static_cast<uintptr_t>(site.site_vaddr),
                                      hook_stub_addr);
   std::memcpy(seg->data.data() + off, &bl, sizeof(bl));
 }
 
 uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {
+  if (parsed.arch != ProgramArch::AArch64) {
+    throw std::runtime_error("hook is only supported on AArch64");
+  }
   const long page_size_long = sysconf(_SC_PAGESIZE);
   if (page_size_long <= 0) {
     throw std::runtime_error("failed to query page size");

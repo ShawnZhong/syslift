@@ -200,6 +200,13 @@ long syslift_framework_hook(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                : "memory", "cc");
   return static_cast<long>(x0);
 #else
+  (void)arg0;
+  (void)arg1;
+  (void)arg2;
+  (void)arg3;
+  (void)arg4;
+  (void)arg5;
+  (void)sys_nr;
   (void)site_vaddr;
   return -1;
 #endif

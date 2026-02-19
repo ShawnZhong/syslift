@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -112,11 +113,14 @@ void patch_program_syscall(syslift::Program &program,
 
 void execute_program(const Options &opts) {
   syslift::Program program = syslift::parse_elf(opts.elf_path);
+  if (!opts.hook.empty() && program.arch != syslift::ProgramArch::AArch64) {
+    throw std::runtime_error("--hook is only supported for AArch64 programs");
+  }
   if (opts.debug) {
     syslift::dump_syslift_table(program);
   }
   for (const syslift::Segment &segment : program.segments) {
-    syslift::reject_if_executable_contains_svc(segment);
+    syslift::reject_if_executable_contains_syscall(program, segment);
   }
   for (const syslift::SysliftSyscallSite &site : program.syscall_sites) {
     syslift::reject_if_unknown_syscall_nr(site);

@@ -28,6 +28,8 @@ Contract surface can include:
 ./run.sh
 ```
 
+Example output below is from AArch64.
+
 ```diff
 Running: `build/loader --debug --allow 93,172 build/getpid`
 .syslift entries=7
@@ -86,11 +88,11 @@ untrusted input: unknown syscall nr in .syslift (site_vaddr=0x400290)
 - exit=1
 ```
 
-## Current Implementation (AArch64)
+## Current Implementation
 
-The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds `svc #0` inline-asm sites, records them in `.syslift` (nr + arg1..arg6 value/knownness metadata), and rewrites syscall sites to return `-ENOSYS` by default.
+The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds syscall inline-asm sites (`svc #0` on AArch64, `syscall` on x86_64), records them in `.syslift` (nr + arg1..arg6 value/knownness metadata), and rewrites syscall sites to return `-ENOSYS` by default.
 
-The loader (`build/loader`) reads `.syslift` at load time and patches selected sites back to `svc #0` according to policy flags.
+The loader (`build/loader`) reads `.syslift` at load time and patches selected sites back to the architecture syscall instruction according to policy flags.
 
 This gives load-time verification and activation of kernel API surface without requiring sandboxing.
 
@@ -114,8 +116,9 @@ Policy:
 - `--deny`: patch everything except listed syscall numbers
 - passing both `--allow` and `--deny` is an error
 - `--hook` takes precedence over `--allow`/`--deny` for matching syscall numbers
-- in `--allow` mode, include `93` (`exit`) if you want normal program termination
+- in `--allow` mode, include your arch's `exit` syscall number if you want normal program termination (`93` on AArch64, `60` on x86_64)
 - arguments after `--` are passed to the loaded program as `argv[1..]` (`argv[0]` is `<elf-file>`)
+- `--hook` is currently supported only for AArch64 programs
 
 `--debug` prints parsed `.syslift` entries (`vals=[nr,arg1..arg6]` with `?` for unknown), per-site patch decisions, and entry address.
 
@@ -149,8 +152,8 @@ clang -O2 -Ithird_party/nolibc \
 
 ## Current Scope
 
-- AArch64 only.
-- Loader currently accepts `ET_EXEC` AArch64 ELF64 little-endian binaries.
-- `svc #0` sites are always recorded in `.syslift`; sites are rewritten to `-ENOSYS` by default, and non-constant `{x8}` sites are rejected by the loader because `nr` is unknown.
-- Loader rejects binaries if it finds any `svc #0` in executable `PT_LOAD` segments whose address is not listed in `.syslift`.
+- Supports `ET_EXEC` ELF64 little-endian binaries for AArch64 and x86_64.
+- Syscall sites are always recorded in `.syslift`; sites are rewritten to `-ENOSYS` by default, and non-constant nr register sites are rejected by the loader because `nr` is unknown.
+- Loader rejects binaries if it finds any raw syscall instruction in executable `PT_LOAD` segments before patching.
+- Hook mode (`--hook`) is implemented for AArch64 only.
 - Loader enforces W^X at mapping time: writable load segments are mapped non-executable.
