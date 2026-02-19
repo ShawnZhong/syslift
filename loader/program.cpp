@@ -25,9 +25,11 @@ namespace {
 
 constexpr uint32_t kSvc0Insn = 0xD4000001u;
 constexpr std::array<uint8_t, 2> kX86SyscallInsn = {0x0F, 0x05};
-constexpr std::array<uint8_t, 8> kX86PatchedSyscallInsn = {0x0F, 0x05, 0x90,
-                                                            0x90, 0x90, 0x90,
-                                                            0x90, 0x90};
+constexpr size_t kX86PatchSlotSize = 8;
+constexpr std::array<uint8_t, kX86PatchSlotSize> kX86PatchedSyscallInsn = {
+    0x0F, 0x05, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+static_assert(kX86PatchedSyscallInsn.size() == kX86PatchSlotSize,
+              "x86 syscall patch slot must stay 8 bytes");
 constexpr uint32_t kBlInsnBase = 0x94000000u;
 
 uintptr_t align_down(uintptr_t value, size_t align) {
@@ -99,7 +101,7 @@ size_t syscall_patch_size(ProgramArch arch) {
   case ProgramArch::AArch64:
     return sizeof(uint32_t);
   case ProgramArch::X86_64:
-    return kX86PatchedSyscallInsn.size();
+    return kX86PatchSlotSize;
   }
   throw std::runtime_error("unsupported arch");
 }
@@ -375,8 +377,9 @@ uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {
   return stub_page;
 }
 
-void dump_syslift_table(const Program &parsed) {
+void dump_program(const Program &parsed) {
   const std::vector<SysliftSyscallSite> &sites = parsed.syscall_sites;
+  std::fprintf(stderr, "detected ELF arch: %s\n", arch_name(parsed.arch));
   std::fprintf(stderr, ".syslift entries=%zu\n", sites.size());
   for (size_t i = 0; i < sites.size(); ++i) {
     const SysliftSyscallSite &site = sites[i];

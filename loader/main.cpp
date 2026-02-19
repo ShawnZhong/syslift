@@ -117,7 +117,7 @@ void execute_program(const Options &opts) {
     throw std::runtime_error("--hook is only supported for AArch64 programs");
   }
   if (opts.debug) {
-    syslift::dump_syslift_table(program);
+    syslift::dump_program(program);
   }
   for (const syslift::Segment &segment : program.segments) {
     syslift::reject_if_executable_contains_syscall(program, segment);
@@ -136,7 +136,6 @@ void execute_program(const Options &opts) {
   }
 
   const uintptr_t load_bias = syslift::map_image(program);
-  syslift::protect_image(program, load_bias);
 
   const uintptr_t entry_sp =
       syslift::setup_runtime_stack(opts.elf_path, opts.exec_args);

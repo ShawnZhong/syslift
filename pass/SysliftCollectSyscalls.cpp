@@ -13,6 +13,7 @@
 
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <limits>
 #include <optional>
@@ -38,14 +39,99 @@ static cl::opt<std::string> SysliftSectionName(
 
 static std::atomic<uint64_t> GlobalSiteId{0};
 
-static bool containsSyscallInsn(StringRef AsmText, TargetArch Arch) {
-  if (Arch == TargetArch::AArch64) {
-    return AsmText.contains_insensitive("svc #0") ||
-           AsmText.contains_insensitive("svc\t#0") ||
-           AsmText.contains_insensitive("svc 0") ||
-           AsmText.contains_insensitive("svc\t0");
+static bool isAsmIdentChar(char C) {
+  const unsigned char UC = static_cast<unsigned char>(C);
+  return std::isalnum(UC) != 0 || C == '_' || C == '.';
+}
+
+static StringRef dropLeadingAsmLabels(StringRef Statement);
+
+static StringRef extractAsmMnemonic(StringRef Statement, StringRef *Operand) {
+  Statement = dropLeadingAsmLabels(Statement).ltrim();
+  if (Statement.empty()) {
+    *Operand = StringRef();
+    return StringRef();
   }
-  return AsmText.contains_insensitive("syscall");
+
+  const size_t MnemonicEnd = Statement.find_first_of(" \t");
+  if (MnemonicEnd == StringRef::npos) {
+    *Operand = StringRef();
+    return Statement;
+  }
+
+  *Operand = Statement.drop_front(MnemonicEnd).ltrim();
+  return Statement.take_front(MnemonicEnd);
+}
+
+static StringRef dropLeadingAsmLabels(StringRef Statement) {
+  while (true) {
+    Statement = Statement.ltrim();
+    if (Statement.empty()) {
+      return Statement;
+    }
+
+    const size_t Colon = Statement.find(':');
+    if (Colon == StringRef::npos) {
+      return Statement;
+    }
+
+    const size_t Space = Statement.find_first_of(" \t");
+    if (Space != StringRef::npos && Space < Colon) {
+      return Statement;
+    }
+    Statement = Statement.drop_front(Colon + 1);
+  }
+}
+
+static bool matchesAArch64SvcInstruction(StringRef Statement) {
+  StringRef Operand;
+  const StringRef Mnemonic = extractAsmMnemonic(Statement, &Operand);
+  if (Mnemonic.empty()) {
+    return false;
+  }
+  if (!Mnemonic.equals_insensitive("svc")) {
+    return false;
+  }
+  if (Operand.consume_front("#")) {
+    Operand = Operand.ltrim();
+  }
+
+  if (!Operand.consume_front("0")) {
+    return false;
+  }
+  return Operand.empty() || !isAsmIdentChar(Operand.front());
+}
+
+static bool matchesX86SyscallInstruction(StringRef Statement) {
+  StringRef Operand;
+  const StringRef Mnemonic = extractAsmMnemonic(Statement, &Operand);
+  return Mnemonic.equals_insensitive("syscall");
+}
+
+static bool containsSyscallInsn(StringRef AsmText, TargetArch Arch) {
+  while (!AsmText.empty()) {
+    const size_t Delim = AsmText.find_first_of("\n;");
+    const StringRef Statement =
+        Delim == StringRef::npos ? AsmText : AsmText.take_front(Delim);
+
+    if (Arch == TargetArch::AArch64) {
+      if (matchesAArch64SvcInstruction(Statement)) {
+        return true;
+      }
+    } else if (Arch == TargetArch::X86_64) {
+      if (matchesX86SyscallInstruction(Statement)) {
+        return true;
+      }
+    } else {
+      llvm_unreachable("unsupported arch");
+    }
+
+    if (Delim == StringRef::npos) {
+      break;
+    }
+    AsmText = AsmText.drop_front(Delim + 1);
+  }
+  return false;
 }
 
 static std::optional<unsigned> parseAArch64RegFromConstraintCode(StringRef Code) {
@@ -75,35 +161,44 @@ parseX86ValueIndexFromConstraintCode(StringRef Code) {
   }
 
   StringRef Reg = Code.drop_front().drop_back();
-  if (Reg.equals_insensitive("rax") || Reg.equals_insensitive("eax") ||
-      Reg.equals_insensitive("ax") || Reg.equals_insensitive("al")) {
-    return 0; // nr
-  }
-  if (Reg.equals_insensitive("rdi") || Reg.equals_insensitive("edi") ||
-      Reg.equals_insensitive("di") || Reg.equals_insensitive("dil")) {
-    return 1; // arg1
-  }
-  if (Reg.equals_insensitive("rsi") || Reg.equals_insensitive("esi") ||
-      Reg.equals_insensitive("si") || Reg.equals_insensitive("sil")) {
-    return 2; // arg2
-  }
-  if (Reg.equals_insensitive("rdx") || Reg.equals_insensitive("edx") ||
-      Reg.equals_insensitive("dx") || Reg.equals_insensitive("dl")) {
-    return 3; // arg3
-  }
-  if (Reg.equals_insensitive("r10") || Reg.equals_insensitive("r10d") ||
-      Reg.equals_insensitive("r10w") || Reg.equals_insensitive("r10b")) {
-    return 4; // arg4
-  }
-  if (Reg.equals_insensitive("r8") || Reg.equals_insensitive("r8d") ||
-      Reg.equals_insensitive("r8w") || Reg.equals_insensitive("r8b")) {
-    return 5; // arg5
-  }
-  if (Reg.equals_insensitive("r9") || Reg.equals_insensitive("r9d") ||
-      Reg.equals_insensitive("r9w") || Reg.equals_insensitive("r9b")) {
-    return 6; // arg6
+  static constexpr struct {
+    const char *Reg;
+    unsigned ValueIndex;
+  } kX86RegisterMap[] = {
+      {"rax", 0}, {"eax", 0}, {"ax", 0},  {"al", 0},   {"rdi", 1},
+      {"edi", 1}, {"di", 1},  {"dil", 1}, {"rsi", 2},  {"esi", 2},
+      {"si", 2},  {"sil", 2}, {"rdx", 3}, {"edx", 3},  {"dx", 3},
+      {"dl", 3},  {"r10", 4}, {"r10d", 4}, {"r10w", 4}, {"r10b", 4},
+      {"r8", 5},  {"r8d", 5}, {"r8w", 5}, {"r8b", 5},  {"r9", 6},
+      {"r9d", 6}, {"r9w", 6}, {"r9b", 6},
+  };
+  for (const auto &Entry : kX86RegisterMap) {
+    if (Reg.equals_insensitive(Entry.Reg)) {
+      return Entry.ValueIndex;
+    }
   }
   return std::nullopt;
+}
+
+static std::optional<unsigned> parseValueIndexFromConstraintCode(TargetArch Arch,
+                                                                 StringRef Code) {
+  if (Arch == TargetArch::AArch64) {
+    std::optional<unsigned> Reg = parseAArch64RegFromConstraintCode(Code);
+    if (!Reg.has_value()) {
+      return std::nullopt;
+    }
+    if (Reg.value() == 8) {
+      return 0;
+    }
+    if (Reg.value() + 1 < SysliftValueCount) {
+      return Reg.value() + 1;
+    }
+    return std::nullopt;
+  }
+  if (Arch == TargetArch::X86_64) {
+    return parseX86ValueIndexFromConstraintCode(Code);
+  }
+  llvm_unreachable("unsupported arch");
 }
 
 struct SyscallArgMetadata {
@@ -144,27 +239,13 @@ static SyscallArgMetadata collectSyscallArgMetadata(const CallBase &CB,
 
     const Value *Arg = CB.getArgOperand(ThisArgIndex);
     for (const std::string &Code : Constraint.Codes) {
-      std::optional<unsigned> ValueIndex;
-      if (Arch == TargetArch::AArch64) {
-        std::optional<unsigned> Reg = parseAArch64RegFromConstraintCode(Code);
-        if (!Reg.has_value()) {
-          continue;
-        }
-        if (Reg.value() == 8) {
-          ValueIndex = 0;
-        } else if (Reg.value() + 1 < SysliftValueCount) {
-          ValueIndex = Reg.value() + 1;
-        } else {
-          continue;
-        }
-      } else {
-        ValueIndex = parseX86ValueIndexFromConstraintCode(Code);
-        if (!ValueIndex.has_value()) {
-          continue;
-        }
+      const std::optional<unsigned> ValueIndex =
+          parseValueIndexFromConstraintCode(Arch, Code);
+      if (!ValueIndex.has_value()) {
+        continue;
       }
 
-      if (ValueIndex.value() == 0) {
+      if (ValueIndex.value() == 0u) {
         if (const auto *Imm = dyn_cast<ConstantInt>(Arg);
             Imm != nullptr && !Imm->isNegative() &&
             !Imm->getValue().ugt(std::numeric_limits<uint32_t>::max())) {
@@ -230,23 +311,29 @@ static InlineAsm *getInlineAsmCallee(CallBase &CB) {
   return dyn_cast<InlineAsm>(Callee);
 }
 
+static std::optional<TargetArch> getTargetArch(const Triple &TT) {
+  if (TT.isAArch64()) {
+    return TargetArch::AArch64;
+  }
+  if (TT.getArch() == Triple::x86_64) {
+    return TargetArch::X86_64;
+  }
+  return std::nullopt;
+}
+
 class SysliftCollectSyscallsPass
     : public PassInfoMixin<SysliftCollectSyscallsPass> {
 public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     const Triple TT(M.getTargetTriple());
-    std::optional<TargetArch> Arch;
-    if (TT.isAArch64()) {
-      Arch = TargetArch::AArch64;
-    } else if (TT.getArch() == Triple::x86_64) {
-      Arch = TargetArch::X86_64;
-    }
-    if (!Arch.has_value()) {
+    const std::optional<TargetArch> ArchOpt = getTargetArch(TT);
+    if (!ArchOpt.has_value()) {
       return PreservedAnalyses::all();
     }
     if (SysliftSectionName.empty()) {
       return PreservedAnalyses::all();
     }
+    const TargetArch Arch = ArchOpt.value();
 
     bool Changed = false;
 
@@ -262,12 +349,12 @@ public:
           if (IA == nullptr) {
             continue;
           }
-          if (!containsSyscallInsn(IA->getAsmString(), Arch.value())) {
+          if (!containsSyscallInsn(IA->getAsmString(), Arch)) {
             continue;
           }
 
           const SyscallArgMetadata ArgMeta =
-              collectSyscallArgMetadata(*CB, *IA, Arch.value());
+              collectSyscallArgMetadata(*CB, *IA, Arch);
 
           const uint64_t SiteId =
               GlobalSiteId.fetch_add(1, std::memory_order_relaxed);
@@ -275,13 +362,13 @@ public:
               (Twine("__syslift_syscall_site_") + Twine(SiteId)).str();
 
           M.appendModuleInlineAsm(buildSectionEntryAsm(
-              SysliftSectionName, SiteLabel, ArgMeta, Arch.value()));
+              SysliftSectionName, SiteLabel, ArgMeta, Arch));
 
           Changed = true;
           if ((ArgMeta.KnownMask & SysliftNrBit) == 0u) {
             WithColor::warning(errs(), "SysliftCollectSyscallsPass")
                 << "unable to prove constant "
-                << (Arch.value() == TargetArch::AArch64 ? "x8" : "rax")
+                << (Arch == TargetArch::AArch64 ? "x8" : "rax")
                 << " for syscall site in function "
                 << F.getName()
                 << "; recorded site with nr unknown for loader rejection\n";
@@ -289,7 +376,7 @@ public:
 
           InlineAsm *Replacement = InlineAsm::get(
               IA->getFunctionType(),
-              buildPatchedSiteAsm(SiteLabel, Arch.value()),
+              buildPatchedSiteAsm(SiteLabel, Arch),
               IA->getConstraintString(), IA->hasSideEffects(), IA->isAlignStack(),
               IA->getDialect(), IA->canThrow());
           CB->setCalledOperand(Replacement);
@@ -320,7 +407,7 @@ extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
             });
 
         PB.registerOptimizerLastEPCallback(
-            [](ModulePassManager &MPM, OptimizationLevel, ThinOrFullLTOPhase) {
+            [](ModulePassManager &MPM, OptimizationLevel) {
               MPM.addPass(SysliftCollectSyscallsPass());
             });
       },

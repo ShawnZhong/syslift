@@ -92,35 +92,6 @@ uintptr_t map_image(const Program &program) {
     }
   }
 
-  return load_bias;
-}
-
-void protect_image(const Program &program, uintptr_t load_bias) {
-  const long page_size_long = sysconf(_SC_PAGESIZE);
-  if (page_size_long <= 0) {
-    throw std::runtime_error("failed to query page size");
-  }
-  const size_t page_size = static_cast<size_t>(page_size_long);
-
-  uint64_t min_vaddr = std::numeric_limits<uint64_t>::max();
-  uint64_t max_vaddr = 0;
-  if (program.segments.empty()) {
-    throw std::runtime_error("no PT_LOAD segments");
-  }
-  for (const Segment &seg : program.segments) {
-    min_vaddr = std::min(min_vaddr, static_cast<uint64_t>(seg.start));
-    max_vaddr = std::max(max_vaddr, static_cast<uint64_t>(seg.start + seg.size));
-  }
-
-  const uintptr_t min_page = align_down(static_cast<uintptr_t>(min_vaddr), page_size);
-  uintptr_t max_page = 0;
-  if (!align_up(static_cast<uintptr_t>(max_vaddr), page_size, &max_page) ||
-      max_page <= min_page) {
-    throw std::runtime_error("invalid load range");
-  }
-
-  const uintptr_t mapping_start = load_bias + min_page;
-  const size_t span = max_page - min_page;
   if (mprotect(reinterpret_cast<void *>(mapping_start), span, PROT_NONE) != 0) {
     throw std::runtime_error(std::string("mprotect(PROT_NONE) failed: ") +
                              std::strerror(errno));
@@ -140,6 +111,8 @@ void protect_image(const Program &program, uintptr_t load_bias) {
                                std::strerror(errno));
     }
   }
+
+  return load_bias;
 }
 
 uintptr_t setup_runtime_stack(const std::string &arg0,
@@ -213,12 +186,24 @@ long syslift_framework_hook(uint64_t arg0, uint64_t arg1, uint64_t arg2,
 }
 
 [[noreturn]] void jump_to_entry(uintptr_t entry_pc, uintptr_t entry_sp) {
+#if defined(__aarch64__)
   __asm__ volatile(
       "mov sp, %0\n"
       "br %1\n"
       :
       : "r"(entry_sp), "r"(entry_pc)
       : "memory");
+#elif defined(__x86_64__)
+  __asm__ volatile(
+      "mov %0, %%rsp\n"
+      "xor %%rbp, %%rbp\n"
+      "jmp *%1\n"
+      :
+      : "r"(entry_sp), "r"(entry_pc)
+      : "memory");
+#else
+#error "unsupported host arch for jump_to_entry"
+#endif
   __builtin_unreachable();
 }
 
