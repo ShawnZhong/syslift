@@ -5,13 +5,142 @@
 
 #include <inttypes.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE MAP_FIXED
+#endif
+
 namespace syslift {
+namespace {
+
+uintptr_t align_down(uintptr_t value, size_t align) {
+  return value & ~(static_cast<uintptr_t>(align) - 1U);
+}
+
+bool align_up(uintptr_t value, size_t align, uintptr_t *out) {
+  const uintptr_t add = static_cast<uintptr_t>(align) - 1U;
+  if (value > std::numeric_limits<uintptr_t>::max() - add) {
+    return false;
+  }
+  *out = align_down(value + add, align);
+  return true;
+}
+
+} // namespace
+
+uintptr_t map_image(const Program &program) {
+  const long page_size_long = sysconf(_SC_PAGESIZE);
+  if (page_size_long <= 0) {
+    throw std::runtime_error("failed to query page size");
+  }
+  const size_t page_size = static_cast<size_t>(page_size_long);
+
+  uint64_t min_vaddr = std::numeric_limits<uint64_t>::max();
+  uint64_t max_vaddr = 0;
+  if (program.segments.empty()) {
+    throw std::runtime_error("no PT_LOAD segments");
+  }
+  for (const Segment &seg : program.segments) {
+    min_vaddr = std::min(min_vaddr, static_cast<uint64_t>(seg.start));
+    max_vaddr = std::max(max_vaddr, static_cast<uint64_t>(seg.start + seg.size));
+  }
+
+  const uintptr_t min_page = align_down(static_cast<uintptr_t>(min_vaddr), page_size);
+  uintptr_t max_page = 0;
+  if (!align_up(static_cast<uintptr_t>(max_vaddr), page_size, &max_page) ||
+      max_page <= min_page) {
+    throw std::runtime_error("invalid load range");
+  }
+
+  const size_t span = max_page - min_page;
+  void *base = mmap(reinterpret_cast<void *>(min_page), span,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  if (base == MAP_FAILED) {
+    throw std::runtime_error(std::string("mmap failed: ") + std::strerror(errno));
+  }
+
+  const uintptr_t mapping_start = reinterpret_cast<uintptr_t>(base);
+  const uintptr_t load_bias = mapping_start - min_page;
+  const uintptr_t map_end = mapping_start + span;
+
+  for (const Segment &seg : program.segments) {
+    if (seg.size < seg.data.size()) {
+      throw std::runtime_error("PT_LOAD memsz smaller than filesz");
+    }
+
+    const uintptr_t seg_start = load_bias + seg.start;
+    const uintptr_t seg_end = seg_start + seg.size;
+    if (seg_start < mapping_start || seg_end > map_end || seg_start >= seg_end) {
+      throw std::runtime_error("PT_LOAD maps outside reserved range");
+    }
+
+    auto *dst = reinterpret_cast<uint8_t *>(seg_start);
+    if (!seg.data.empty()) {
+      std::memcpy(dst, seg.data.data(), seg.data.size());
+    }
+    if (seg.size > seg.data.size()) {
+      std::memset(dst + seg.data.size(), 0,
+                  static_cast<size_t>(seg.size - seg.data.size()));
+    }
+  }
+
+  return load_bias;
+}
+
+void protect_image(const Program &program, uintptr_t load_bias) {
+  const long page_size_long = sysconf(_SC_PAGESIZE);
+  if (page_size_long <= 0) {
+    throw std::runtime_error("failed to query page size");
+  }
+  const size_t page_size = static_cast<size_t>(page_size_long);
+
+  uint64_t min_vaddr = std::numeric_limits<uint64_t>::max();
+  uint64_t max_vaddr = 0;
+  if (program.segments.empty()) {
+    throw std::runtime_error("no PT_LOAD segments");
+  }
+  for (const Segment &seg : program.segments) {
+    min_vaddr = std::min(min_vaddr, static_cast<uint64_t>(seg.start));
+    max_vaddr = std::max(max_vaddr, static_cast<uint64_t>(seg.start + seg.size));
+  }
+
+  const uintptr_t min_page = align_down(static_cast<uintptr_t>(min_vaddr), page_size);
+  uintptr_t max_page = 0;
+  if (!align_up(static_cast<uintptr_t>(max_vaddr), page_size, &max_page) ||
+      max_page <= min_page) {
+    throw std::runtime_error("invalid load range");
+  }
+
+  const uintptr_t mapping_start = load_bias + min_page;
+  const size_t span = max_page - min_page;
+  if (mprotect(reinterpret_cast<void *>(mapping_start), span, PROT_NONE) != 0) {
+    throw std::runtime_error(std::string("mprotect(PROT_NONE) failed: ") +
+                             std::strerror(errno));
+  }
+
+  for (const Segment &seg : program.segments) {
+    const uintptr_t seg_start = load_bias + seg.start;
+    const uintptr_t prot_start = align_down(seg_start, page_size);
+    uintptr_t prot_end = 0;
+    if (!align_up(seg_start + seg.size, page_size, &prot_end) ||
+        prot_end <= prot_start) {
+      throw std::runtime_error("invalid segment protection range");
+    }
+    if (mprotect(reinterpret_cast<void *>(prot_start), prot_end - prot_start,
+                 seg.prot) != 0) {
+      throw std::runtime_error(std::string("mprotect failed: ") +
+                               std::strerror(errno));
+    }
+  }
+}
 
 RuntimeStack setup_runtime_stack(const char *argv0) {
   constexpr size_t kStackSize = 1UL << 20;

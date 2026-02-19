@@ -1,11 +1,16 @@
 #pragma once
 
+#include "program.h"
 #include <sys/mman.h>
 
 #include <cstddef>
 #include <cstdint>
 
 namespace syslift {
+
+uintptr_t map_image(const Program &program);
+
+void protect_image(const Program &program, uintptr_t load_bias);
 
 struct RuntimeStack {
   void *base = nullptr;

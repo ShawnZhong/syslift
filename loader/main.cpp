@@ -1,5 +1,4 @@
-#include "elf.h"
-#include "image.h"
+#include "program.h"
 #include "runtime.h"
 
 #include <cxxopts.hpp>
@@ -74,81 +73,87 @@ Options parse_options(int argc, char **argv) {
   }
 }
 
+bool contains(const std::vector<uint32_t> &list, uint32_t value) {
+  return std::find(list.begin(), list.end(), value) != list.end();
+}
+
+bool should_patch_syscall(const Options &opts, uint32_t sys_nr) {
+  if (!opts.allow.empty()) {
+    return contains(opts.allow, sys_nr);
+  }
+  if (!opts.deny.empty()) {
+    return !contains(opts.deny, sys_nr);
+  }
+  return true;
+}
+
+void patch_program_syscall(syslift::Program &program,
+                           const syslift::SysliftSyscallSite &site,
+                           const Options &opts, uintptr_t hook_stub_addr) {
+  const uint32_t sys_nr = static_cast<uint32_t>(site.values[0]);
+  if (contains(opts.hook, sys_nr)) {
+    syslift::patch_syscall_to_hook(program, site, hook_stub_addr);
+    if (opts.debug) {
+      std::fprintf(
+          stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32 " action=HOOKED\n",
+          site.site_vaddr, sys_nr);
+    }
+    return;
+  }
+
+  if (!should_patch_syscall(opts, sys_nr)) {
+    if (opts.debug) {
+      std::fprintf(
+          stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32 " action=ENOSYS\n",
+          site.site_vaddr, sys_nr);
+    }
+    return;
+  }
+
+  syslift::patch_syscall_to_svc(program, site);
+  if (opts.debug) {
+    std::fprintf(stderr,
+                 "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32 " action=PATCHED\n",
+                 site.site_vaddr, sys_nr);
+  }
+}
+
+void execute_program(const Options &opts) {
+  const char *elf_path = opts.elf_path.c_str();
+
+  syslift::Program program = syslift::parse_elf(elf_path);
+  syslift::reject_if_text_contains_svc(program);
+  if (opts.debug) {
+    syslift::dump_syslift_table(program);
+  }
+  syslift::reject_if_unknown_syscall_nr(program);
+
+  uintptr_t hook_stub_addr = 0;
+  if (!opts.hook.empty()) {
+    hook_stub_addr = syslift::install_hook_stub(
+        program, reinterpret_cast<uintptr_t>(&syslift::syslift_framework_hook));
+  }
+  for (const syslift::SysliftSyscallSite &site : program.syscall_sites) {
+    patch_program_syscall(program, site, opts, hook_stub_addr);
+  }
+
+  const uintptr_t load_bias = syslift::map_image(program);
+  syslift::protect_image(program, load_bias);
+
+  syslift::RuntimeStack runtime_stack = syslift::setup_runtime_stack(elf_path);
+
+  const uintptr_t entry = load_bias + program.entry;
+  if (opts.debug) {
+    std::fprintf(stderr, "start executing: entry=0x%" PRIxPTR "\n", entry);
+  }
+  syslift::jump_to_entry(entry, runtime_stack.entry_sp);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   try {
-    Options opts = parse_options(argc, argv);
-    const char *elf_path = opts.elf_path.c_str();
-
-    std::vector<uint8_t> file = syslift::read_whole_file(elf_path);
-
-    syslift::ParsedElf parsed = syslift::parse_elf(file);
-    syslift::reject_if_text_contains_svc(file, parsed);
-    if (opts.debug) {
-      syslift::dump_syslift_table(parsed);
-    }
-    syslift::reject_if_unknown_syscall_nr(parsed);
-
-    syslift::Image image = syslift::map_image(file, parsed);
-    uintptr_t hook_stub_addr = 0;
-
-    auto contains = [](const std::vector<uint32_t> &list, uint32_t value) {
-      return std::find(list.begin(), list.end(), value) != list.end();
-    };
-
-    for (const syslift::SysliftSyscallSite &site : parsed.syscall_sites) {
-      const uint32_t sys_nr = static_cast<uint32_t>(site.values[0]);
-      if (contains(opts.hook, sys_nr)) {
-        if (hook_stub_addr == 0) {
-          hook_stub_addr = syslift::install_hook_stub(
-              image, reinterpret_cast<uintptr_t>(&syslift::syslift_framework_hook));
-        }
-        syslift::patch_syscall_to_hook(site, image, hook_stub_addr);
-        if (opts.debug) {
-          std::fprintf(stderr,
-                       "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
-                       " action=HOOKED\n",
-                       site.site_vaddr, sys_nr);
-        }
-        continue;
-      }
-
-      bool should_patch = true;
-      if (!opts.allow.empty()) {
-        should_patch = contains(opts.allow, sys_nr);
-      } else if (!opts.deny.empty()) {
-        should_patch = !contains(opts.deny, sys_nr);
-      }
-
-      if (!should_patch) {
-        if (opts.debug) {
-          std::fprintf(stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
-                               " action=ENOSYS\n",
-                       site.site_vaddr, sys_nr);
-        }
-        continue;
-      }
-
-      syslift::patch_syscall_to_svc(site, image);
-      if (opts.debug) {
-        std::fprintf(stderr,
-                     "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
-                     " action=PATCHED\n",
-                     site.site_vaddr, sys_nr);
-      }
-    }
-
-    syslift::apply_segment_protections(image);
-
-    syslift::RuntimeStack runtime_stack = syslift::setup_runtime_stack(elf_path);
-
-    const uintptr_t entry = image.entry;
-    const uintptr_t entry_sp = runtime_stack.entry_sp;
-    if (opts.debug) {
-      std::fprintf(stderr, "start executing: entry=0x%" PRIxPTR "\n", entry);
-    }
-    syslift::jump_to_entry(entry, entry_sp);
+    execute_program(parse_options(argc, argv));
   } catch (const std::exception &e) {
     std::fprintf(stderr, "%s\n", e.what());
     return 1;
