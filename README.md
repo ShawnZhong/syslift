@@ -31,13 +31,13 @@ Contract surface can include:
 ```diff
 Running: `build/loader --debug --allow 93,172 build/getpid`
 .syslift entries=7
-table[0] site_vaddr=0x400298 vals=[ 64,   1,   ?,  14,   ?,   ?,   ?]
-table[1] site_vaddr=0x4002f0 vals=[ 93,   ?,   ?,   ?,   ?,   ?,   ?]
-table[2] site_vaddr=0x40035c vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
-table[3] site_vaddr=0x40036c vals=[129,   ?,   ?,   ?,   ?,   ?,   ?]
-table[4] site_vaddr=0x40055c vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
-table[5] site_vaddr=0x40056c vals=[129,   ?,   6,   ?,   ?,   ?,   ?]
-table[6] site_vaddr=0x400328 vals=[ 64,   1,   ?,  14,   ?,   ?,   ?]
+table[0] site_vaddr=0x400280 vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
+table[1] site_vaddr=0x4002b8 vals=[ 93,   ?,   ?,   ?,   ?,   ?,   ?]
+table[2] site_vaddr=0x4002e4 vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
+table[3] site_vaddr=0x4002f4 vals=[129,   ?,   ?,   ?,   ?,   ?,   ?]
+table[4] site_vaddr=0x4004e4 vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
+table[5] site_vaddr=0x4004f4 vals=[129,   ?,   6,   ?,   ?,   ?,   ?]
+table[6] site_vaddr=0x4002cc vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
 site_vaddr=0x400280 sys_nr=172 action=PATCHED
 site_vaddr=0x4002b8 sys_nr=93 action=PATCHED
 site_vaddr=0x4002e4 sys_nr=172 action=PATCHED
@@ -46,6 +46,11 @@ site_vaddr=0x4004e4 sys_nr=172 action=PATCHED
 site_vaddr=0x4004f4 sys_nr=129 action=ENOSYS
 site_vaddr=0x4002cc sys_nr=172 action=PATCHED
 start executing: entry=0x4002c0
++ exit=0
+
+Running: `build/loader --hook 172,93 build/getpid`
+hook site=0x400280 nr=172 args=[281473172045776, 281473172045776, 3, 131106, 18446744073709551615, 0]
+hook site=0x4002b8 nr=93 args=[0, 281473172045776, 3, 131106, 18446744073709551615, 0]
 + exit=0
 
 Running: `build/loader --deny 172 build/getpid`

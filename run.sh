@@ -16,6 +16,7 @@ run() {
 }
 
 run build/loader --debug --allow 93,172 build/getpid
+run build/loader --hook 172,93 build/getpid
 run build/loader --deny 172 build/getpid
 
 run build/loader build/write
