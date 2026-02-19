@@ -28,11 +28,9 @@ Contract surface can include:
 ```
 
 ```diff
-Running: `build/getpid`
-- exit=1
-
-Running: `build/loader --debug --allow 172 build/getpid`
+Running: `build/loader --debug --allow 93,172 build/getpid`
 site_vaddr=0x400280 sys_nr=172 action=PATCHED
+site_vaddr=0x4002b8 sys_nr=93 action=PATCHED
 site_vaddr=0x4002e4 sys_nr=172 action=PATCHED
 site_vaddr=0x4002f4 sys_nr=129 action=ENOSYS
 site_vaddr=0x4004e4 sys_nr=172 action=PATCHED
@@ -44,9 +42,6 @@ start executing: entry=0x4002c0
 Running: `build/loader --deny 172 build/getpid`
 - exit=1
 
-Running: `build/write`
-- exit=1
-
 Running: `build/loader build/write`
 hello, world!
 + exit=0
@@ -54,21 +49,22 @@ hello, world!
 Running: `build/loader --deny 64 build/write`
 - exit=1
 
-Running: `build/print_pid`
-- exit=1
-
 Running: `build/loader build/print_pid`
-pid: 293553
+pid: <pid>
 + exit=0
 
 Running: `build/loader --deny 172 build/print_pid`
 pid: -38
 - exit=1
+
+Running: `build/loader build/reject`
+untrusted input: svc #0 not listed in .syslift (.text vaddr=0x400288)
+- exit=1
 ```
 
 ## Current Implementation (AArch64)
 
-The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds `svc #0` inline-asm sites, records them in `.syslift`, and rewrites them to return `-ENOSYS` by default (except `exit`, syscall `93`).
+The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds `svc #0` inline-asm sites, records them in `.syslift`, and rewrites constant-`x8` syscall sites to return `-ENOSYS` by default.
 
 The loader (`build/loader`) reads `.syslift` at load time and patches selected sites back to `svc #0` according to policy flags.
 
@@ -92,6 +88,7 @@ Policy:
 - `--allow`: only patch listed syscall numbers
 - `--deny`: patch everything except listed syscall numbers
 - passing both `--allow` and `--deny` is an error
+- in `--allow` mode, include `93` (`exit`) if you want normal program termination
 
 `--debug` prints per-site decisions and entry address.
 
@@ -127,3 +124,4 @@ clang -O2 -Ithird_party/nolibc \
 - AArch64 only.
 - Loader currently accepts `ET_EXEC` AArch64 ELF64 little-endian binaries.
 - `svc #0` sites with constant `{x8}` are recorded in `.syslift`; non-constant `{x8}` sites emit a warning, are left unmodified, and are not recorded.
+- Loader rejects binaries if it finds any `svc #0` in `.text*` whose address is not listed in `.syslift`.

@@ -22,7 +22,6 @@ using namespace llvm;
 namespace {
 
 static constexpr char SysliftSyscallTableSection[] = ".syslift";
-static constexpr uint32_t AArch64SysExit = 93;
 static constexpr int64_t AArch64NegEnosys = -38;
 
 static cl::opt<std::string> SysliftSectionName(
@@ -87,10 +86,6 @@ static std::optional<uint32_t> extractSyscallNumber(const CallBase &CB,
     return std::nullopt;
   }
   return static_cast<uint32_t>(Imm->getZExtValue());
-}
-
-static bool isAlwaysAllowedSyscall(uint32_t SysNr) {
-  return SysNr == AArch64SysExit;
 }
 
 static std::string buildSectionEntryAsm(StringRef SectionName,
@@ -160,9 +155,6 @@ public:
                 << "unable to prove constant x8 for syscall site in function "
                 << F.getName()
                 << "; leaving site unmodified and not recording .syslift entry\n";
-            continue;
-          }
-          if (isAlwaysAllowedSyscall(SysNr.value())) {
             continue;
           }
 

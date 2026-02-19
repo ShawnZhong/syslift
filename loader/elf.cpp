@@ -1,6 +1,7 @@
 #include "elf.h"
 
 #include <cerrno>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <inttypes.h>
@@ -178,6 +179,13 @@ void parse_elf(const std::vector<uint8_t> &file, ParsedElf *parsed) {
 
 void reject_if_text_contains_svc(const std::vector<uint8_t> &file,
                                  const ParsedElf &parsed) {
+  std::vector<uint64_t> trusted_sites;
+  trusted_sites.reserve(parsed.syscall_sites.size());
+  for (const SysliftSyscallSite &site : parsed.syscall_sites) {
+    trusted_sites.push_back(site.site_vaddr);
+  }
+  std::sort(trusted_sites.begin(), trusted_sites.end());
+
   if (parsed.ehdr.e_shentsize != sizeof(Elf64_Shdr) ||
       parsed.ehdr.e_shnum == 0) {
     throw std::runtime_error("invalid section header table");
@@ -224,12 +232,17 @@ void reject_if_text_contains_svc(const std::vector<uint8_t> &file,
       if (read_u32_le(text + off) != kSvc0Insn) {
         continue;
       }
+      const uint64_t site_vaddr = sec.sh_addr + static_cast<uint64_t>(off);
+      if (std::binary_search(trusted_sites.begin(), trusted_sites.end(),
+                             site_vaddr)) {
+        continue;
+      }
 
       char msg[192];
-      const uint64_t site_vaddr = sec.sh_addr + static_cast<uint64_t>(off);
       std::snprintf(msg, sizeof(msg),
-                    "Rejecting svc #0 in %s at vaddr=0x%" PRIx64, name,
-                    site_vaddr);
+                    "untrusted input: svc #0 not listed in .syslift (%s "
+                    "vaddr=0x%" PRIx64 ")",
+                    name, site_vaddr);
       throw std::runtime_error(msg);
     }
   }
