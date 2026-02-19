@@ -70,6 +70,22 @@ struct Image {
   }
 };
 
+struct RuntimeStack {
+  void *base = nullptr;
+  size_t size = 0;
+
+  ~RuntimeStack() {
+    if (base != nullptr && size != 0) {
+      munmap(base, size);
+    }
+  }
+
+  void release() {
+    base = nullptr;
+    size = 0;
+  }
+};
+
 struct ParsedElf {
   Elf64_Ehdr ehdr{};
   std::vector<Elf64_Phdr> phdrs;
@@ -592,11 +608,59 @@ static bool apply_segment_protections(const char *path, const Image &image) {
   return true;
 }
 
-[[noreturn]] static void jump_to_entry(uintptr_t entry) {
+static bool setup_runtime_stack(const char *path, const char *argv0,
+                                RuntimeStack *stack, uintptr_t *entry_sp) {
+  constexpr size_t kStackSize = 1UL << 20; // 1 MiB
+
+  void *mem = mmap(nullptr, kStackSize, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+  if (mem == MAP_FAILED) {
+    std::fprintf(stderr, "%s: runtime stack mmap failed: %s\n", path,
+                 std::strerror(errno));
+    return false;
+  }
+
+  stack->base = mem;
+  stack->size = kStackSize;
+
+  uintptr_t sp = reinterpret_cast<uintptr_t>(mem) + kStackSize;
+  sp &= ~static_cast<uintptr_t>(0xFUL);
+
+  auto push_u64 = [&](uint64_t v) {
+    sp -= sizeof(uint64_t);
+    *reinterpret_cast<uint64_t *>(sp) = v;
+  };
+
+  // auxv terminator (AT_NULL, 0)
+  push_u64(0);
+  push_u64(0);
+  // envp[0] = NULL
+  push_u64(0);
+  // argv[1] = NULL, argv[0] = path, argc = 1
+  push_u64(0);
+  push_u64(reinterpret_cast<uintptr_t>(argv0));
+  push_u64(1);
+
+  *entry_sp = sp;
+  return true;
+}
+
+[[noreturn]] static void jump_to_entry(uintptr_t entry, uintptr_t entry_sp) {
+#if defined(__aarch64__)
+  __asm__ volatile(
+      "mov sp, %0\n"
+      "br %1\n"
+      :
+      : "r"(entry_sp), "r"(entry)
+      : "memory");
+  __builtin_unreachable();
+#else
+  (void)entry_sp;
   using EntryFn = void (*)();
   EntryFn fn = reinterpret_cast<EntryFn>(entry);
   fn();
   _exit(127);
+#endif
 }
 
 }  // namespace
@@ -644,7 +708,14 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  RuntimeStack runtime_stack;
+  uintptr_t entry_sp = 0;
+  if (!setup_runtime_stack(elf_path, elf_path, &runtime_stack, &entry_sp)) {
+    return 1;
+  }
+
   const uintptr_t entry = image.entry;
   image.release();
-  jump_to_entry(entry);
+  runtime_stack.release();
+  jump_to_entry(entry, entry_sp);
 }
