@@ -125,3 +125,4 @@ clang -O2 -Ithird_party/nolibc \
 - Loader currently accepts `ET_EXEC` AArch64 ELF64 little-endian binaries.
 - `svc #0` sites with constant `{x8}` are recorded in `.syslift`; non-constant `{x8}` sites emit a warning, are left unmodified, and are not recorded.
 - Loader rejects binaries if it finds any `svc #0` in `.text*` whose address is not listed in `.syslift`.
+- Loader enforces W^X at mapping time: writable load segments are mapped non-executable.

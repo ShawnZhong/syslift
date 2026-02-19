@@ -38,7 +38,7 @@ int phdr_flags_to_prot(uint32_t flags) {
   if ((flags & PF_W) != 0U) {
     prot |= PROT_WRITE;
   }
-  if ((flags & PF_X) != 0U) {
+  if ((flags & PF_X) != 0U && (flags & PF_W) == 0U) {
     prot |= PROT_EXEC;
   }
   return prot;
@@ -129,9 +129,10 @@ void map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed,
       std::memset(dst + ph.p_filesz, 0, static_cast<size_t>(ph.p_memsz - ph.p_filesz));
     }
 
+    const int seg_prot = phdr_flags_to_prot(ph.p_flags);
     image->segments.push_back(
-        Segment{seg_start, static_cast<size_t>(ph.p_memsz),
-                phdr_flags_to_prot(ph.p_flags), (ph.p_flags & PF_X) != 0U});
+        Segment{seg_start, static_cast<size_t>(ph.p_memsz), seg_prot,
+                (seg_prot & PROT_EXEC) != 0});
   }
 }
 
