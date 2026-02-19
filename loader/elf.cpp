@@ -102,6 +102,10 @@ void parse_syscall_table(const std::vector<uint8_t> &file,
     SysliftSyscallSite site{};
     site.site_vaddr = read_u64_le(table + rec);
     site.sys_nr = read_u32_le(table + rec + 8);
+    site.arg_known_mask = read_u32_le(table + rec + 12);
+    for (size_t arg = 0; arg < 6; ++arg) {
+      site.arg_values[arg] = read_u64_le(table + rec + 16 + arg * 8);
+    }
     sites->push_back(site);
   }
 }
@@ -245,6 +249,28 @@ void reject_if_text_contains_svc(const std::vector<uint8_t> &file,
                     name, site_vaddr);
       throw std::runtime_error(msg);
     }
+  }
+}
+
+void dump_syslift_table(const ParsedElf &parsed) {
+  const std::vector<SysliftSyscallSite> &sites = parsed.syscall_sites;
+  std::fprintf(stderr, ".syslift entries=%zu\n", sites.size());
+  for (size_t i = 0; i < sites.size(); ++i) {
+    const SysliftSyscallSite &site = sites[i];
+    std::fprintf(stderr, "table[%zu] site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
+                         " known={",
+                 i, site.site_vaddr, site.sys_nr);
+
+    bool first = true;
+    for (uint32_t arg = 0; arg < 6; ++arg) {
+      if ((site.arg_known_mask & (1u << arg)) == 0u) {
+        continue;
+      }
+      std::fprintf(stderr, "%sarg%" PRIu32 "=%" PRIu64, first ? "" : ", ",
+                   arg, site.arg_values[arg]);
+      first = false;
+    }
+    std::fprintf(stderr, "}\n");
   }
 }
 

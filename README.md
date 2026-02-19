@@ -64,7 +64,7 @@ untrusted input: svc #0 not listed in .syslift (.text vaddr=0x400288)
 
 ## Current Implementation (AArch64)
 
-The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds `svc #0` inline-asm sites, records them in `.syslift`, and rewrites constant-`x8` syscall sites to return `-ENOSYS` by default.
+The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds `svc #0` inline-asm sites, records them in `.syslift` (syscall number plus x0..x5 compile-time-known metadata), and rewrites constant-`x8` syscall sites to return `-ENOSYS` by default.
 
 The loader (`build/loader`) reads `.syslift` at load time and patches selected sites back to `svc #0` according to policy flags.
 
@@ -100,6 +100,8 @@ Section name: `.syslift`
 struct SysliftSyscallSite {
   uint64_t site_vaddr;
   uint32_t sys_nr;
+  uint32_t arg_known_mask;   // bit i => xi is compile-time known (i in [0,5])
+  uint64_t arg_values[6];    // value for x0..x5 when known
 } __attribute__((packed));
 ```
 

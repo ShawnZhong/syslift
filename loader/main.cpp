@@ -81,6 +81,9 @@ int main(int argc, char **argv) {
     syslift::ParsedElf parsed;
     syslift::parse_elf(file, &parsed);
     syslift::reject_if_text_contains_svc(file, parsed);
+    if (opts.debug) {
+      syslift::dump_syslift_table(parsed);
+    }
 
     syslift::Image image;
     syslift::map_image(file, parsed, &image);
