@@ -27,6 +27,45 @@ Contract surface can include:
 ./run.sh
 ```
 
+```diff
+Running: `build/getpid`
+- exit=1
+
+Running: `build/loader --debug --allow 172 build/getpid`
+site_vaddr=0x400280 sys_nr=172 action=PATCHED
+site_vaddr=0x4002e4 sys_nr=172 action=PATCHED
+site_vaddr=0x4002f4 sys_nr=129 action=ENOSYS
+site_vaddr=0x4004e4 sys_nr=172 action=PATCHED
+site_vaddr=0x4004f4 sys_nr=129 action=ENOSYS
+site_vaddr=0x4002cc sys_nr=172 action=PATCHED
+start executing: entry=0x4002c0
++ exit=0
+
+Running: `build/loader --deny 172 build/getpid`
+- exit=1
+
+Running: `build/write`
+- exit=1
+
+Running: `build/loader build/write`
+hello, world!
++ exit=0
+
+Running: `build/loader --deny 64 build/write`
+- exit=1
+
+Running: `build/print_pid`
+- exit=1
+
+Running: `build/loader build/print_pid`
+pid: 293553
++ exit=0
+
+Running: `build/loader --deny 172 build/print_pid`
+pid: -38
+- exit=1
+```
+
 ## Current Implementation (AArch64)
 
 The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds `svc #0` inline-asm sites, records them in `.syslift`, and rewrites them to return `-ENOSYS` by default (except `exit`, syscall `93`).
