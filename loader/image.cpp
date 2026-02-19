@@ -1,0 +1,206 @@
+#include "image.h"
+
+#include <sys/mman.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <inttypes.h>
+#include <limits>
+
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE MAP_FIXED
+#endif
+
+namespace syslift {
+namespace {
+
+uintptr_t align_down(uintptr_t value, size_t align) {
+  return value & ~(static_cast<uintptr_t>(align) - 1U);
+}
+
+bool align_up(uintptr_t value, size_t align, uintptr_t *out) {
+  const uintptr_t add = static_cast<uintptr_t>(align) - 1U;
+  if (value > std::numeric_limits<uintptr_t>::max() - add) {
+    return false;
+  }
+  *out = align_down(value + add, align);
+  return true;
+}
+
+int phdr_flags_to_prot(uint32_t flags) {
+  int prot = 0;
+  if ((flags & PF_R) != 0U) {
+    prot |= PROT_READ;
+  }
+  if ((flags & PF_W) != 0U) {
+    prot |= PROT_WRITE;
+  }
+  if ((flags & PF_X) != 0U) {
+    prot |= PROT_EXEC;
+  }
+  return prot;
+}
+
+bool is_in_exec_segment(const Image &image, uintptr_t addr) {
+  for (const Segment &seg : image.segments) {
+    if (!seg.executable) {
+      continue;
+    }
+    if (addr >= seg.start && addr + sizeof(uint32_t) <= seg.start + seg.size) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+bool map_image(const char *path, const std::vector<uint8_t> &file,
+               const ParsedElf &parsed, Image *image) {
+  const long page_size_long = sysconf(_SC_PAGESIZE);
+  if (page_size_long <= 0) {
+    std::fprintf(stderr, "%s: failed to query page size\n", path);
+    return false;
+  }
+  const size_t page_size = static_cast<size_t>(page_size_long);
+
+  uint64_t min_vaddr = std::numeric_limits<uint64_t>::max();
+  uint64_t max_vaddr = 0;
+  bool saw_load = false;
+
+  for (const Elf64_Phdr &ph : parsed.phdrs) {
+    if (ph.p_type != PT_LOAD || ph.p_memsz == 0) {
+      continue;
+    }
+    saw_load = true;
+    min_vaddr = std::min(min_vaddr, ph.p_vaddr);
+    max_vaddr = std::max(max_vaddr, ph.p_vaddr + ph.p_memsz);
+  }
+
+  if (!saw_load) {
+    std::fprintf(stderr, "%s: no PT_LOAD segments\n", path);
+    return false;
+  }
+
+  const uintptr_t min_page = align_down(static_cast<uintptr_t>(min_vaddr), page_size);
+  uintptr_t max_page = 0;
+  if (!align_up(static_cast<uintptr_t>(max_vaddr), page_size, &max_page) ||
+      max_page <= min_page) {
+    std::fprintf(stderr, "%s: invalid load range\n", path);
+    return false;
+  }
+
+  const size_t span = max_page - min_page;
+  void *base = mmap(reinterpret_cast<void *>(min_page), span,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  if (base == MAP_FAILED) {
+    std::fprintf(stderr, "%s: mmap failed: %s\n", path, std::strerror(errno));
+    return false;
+  }
+
+  image->mapping_start = reinterpret_cast<uintptr_t>(base);
+  image->mapping_size = span;
+  image->page_size = page_size;
+  image->load_bias = image->mapping_start - min_page;
+  image->entry = image->load_bias + parsed.ehdr.e_entry;
+  image->segments.clear();
+
+  const uintptr_t map_end = image->mapping_start + image->mapping_size;
+
+  for (const Elf64_Phdr &ph : parsed.phdrs) {
+    if (ph.p_type != PT_LOAD || ph.p_memsz == 0) {
+      continue;
+    }
+    if (ph.p_offset + ph.p_filesz > file.size()) {
+      std::fprintf(stderr, "%s: PT_LOAD file range out of bounds\n", path);
+      return false;
+    }
+
+    const uintptr_t seg_start = image->load_bias + static_cast<uintptr_t>(ph.p_vaddr);
+    const uintptr_t seg_end = seg_start + static_cast<uintptr_t>(ph.p_memsz);
+    if (seg_start < image->mapping_start || seg_end > map_end || seg_start >= seg_end) {
+      std::fprintf(stderr, "%s: PT_LOAD maps outside reserved range\n", path);
+      return false;
+    }
+
+    auto *dst = reinterpret_cast<uint8_t *>(seg_start);
+    if (ph.p_filesz != 0) {
+      std::memcpy(dst, file.data() + ph.p_offset, static_cast<size_t>(ph.p_filesz));
+    }
+    if (ph.p_memsz > ph.p_filesz) {
+      std::memset(dst + ph.p_filesz, 0, static_cast<size_t>(ph.p_memsz - ph.p_filesz));
+    }
+
+    image->segments.push_back(
+        Segment{seg_start, static_cast<size_t>(ph.p_memsz),
+                phdr_flags_to_prot(ph.p_flags), (ph.p_flags & PF_X) != 0U});
+  }
+
+  return true;
+}
+
+bool patch_syscalls(const char *path, const ParsedElf &parsed,
+                    const Image &image) {
+  std::fprintf(stderr, "patching %zu syscall site(s) load_bias=0x%" PRIxPTR "\n",
+               parsed.syscall_sites.size(), image.load_bias);
+  for (const SysliftSyscallSite &site : parsed.syscall_sites) {
+    uintptr_t site_addr = image.load_bias + static_cast<uintptr_t>(site.site_vaddr);
+
+    if ((site_addr & 0x3U) != 0U) {
+      std::fprintf(stderr, "%s: syscall site 0x%" PRIxPTR " is not 4-byte aligned\n",
+                   path, site_addr);
+      return false;
+    }
+    if (!is_in_exec_segment(image, site_addr)) {
+      std::fprintf(stderr,
+                   "%s: syscall site 0x%" PRIxPTR " is outside executable segments\n",
+                   path, site_addr);
+      return false;
+    }
+
+    auto *insn = reinterpret_cast<uint32_t *>(site_addr);
+    *insn = kSvc0Insn;
+    __builtin___clear_cache(reinterpret_cast<char *>(insn),
+                            reinterpret_cast<char *>(insn) + sizeof(uint32_t));
+    std::fprintf(stderr,
+                 "patched site_vaddr=0x%016" PRIx64
+                 " mapped=0x%" PRIxPTR " sys_nr=%" PRIu32 " -> svc #0\n",
+                 site.site_vaddr, site_addr, site.sys_nr);
+  }
+
+  std::fprintf(stderr, "patching complete\n");
+  return true;
+}
+
+bool apply_segment_protections(const char *path, const Image &image) {
+  if (mprotect(reinterpret_cast<void *>(image.mapping_start), image.mapping_size,
+               PROT_NONE) != 0) {
+    std::fprintf(stderr, "%s: mprotect(PROT_NONE) failed: %s\n", path,
+                 std::strerror(errno));
+    return false;
+  }
+
+  for (const Segment &seg : image.segments) {
+    const uintptr_t prot_start = align_down(seg.start, image.page_size);
+    uintptr_t prot_end = 0;
+    if (!align_up(seg.start + seg.size, image.page_size, &prot_end) ||
+        prot_end <= prot_start) {
+      std::fprintf(stderr, "%s: invalid segment protection range\n", path);
+      return false;
+    }
+    if (mprotect(reinterpret_cast<void *>(prot_start), prot_end - prot_start,
+                 seg.prot) != 0) {
+      std::fprintf(stderr, "%s: mprotect failed: %s\n", path,
+                   std::strerror(errno));
+      return false;
+    }
+  }
+
+  return true;
+}
+
+} // namespace syslift

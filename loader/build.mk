@@ -1,6 +1,9 @@
 LOADER_TOOL := $(BUILD_DIR)/loader
-LOADER_SRC := loader/loader.cpp
+LOADER_SRCS := $(sort $(wildcard loader/*.cpp))
+LOADER_HDRS := $(sort $(wildcard loader/*.h))
+LOADER_VENDOR_HDRS := third_party/cxxopts/cxxopts.hpp
 LOADER_CXXFLAGS ?= -O2 -Wall -Wextra -Werror -std=c++17
+LOADER_CPPFLAGS := $(CPPFLAGS) -Ithird_party/cxxopts
 
-$(LOADER_TOOL): $(LOADER_SRC) | $(BUILD_DIR)
-	$(CXX) $(LOADER_CXXFLAGS) $(CPPFLAGS) $< -o $@
+$(LOADER_TOOL): $(LOADER_SRCS) $(LOADER_HDRS) $(LOADER_VENDOR_HDRS) | $(BUILD_DIR)
+	$(CXX) $(LOADER_CXXFLAGS) $(LOADER_CPPFLAGS) $(LOADER_SRCS) -o $@
