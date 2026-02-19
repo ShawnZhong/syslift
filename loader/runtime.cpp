@@ -11,8 +11,7 @@
 
 namespace syslift {
 
-void setup_runtime_stack(const char *argv0, RuntimeStack *stack,
-                         uintptr_t *entry_sp) {
+RuntimeStack setup_runtime_stack(const char *argv0) {
   constexpr size_t kStackSize = 1UL << 20;
 
   void *mem = mmap(nullptr, kStackSize, PROT_READ | PROT_WRITE,
@@ -21,9 +20,6 @@ void setup_runtime_stack(const char *argv0, RuntimeStack *stack,
     throw std::runtime_error(std::string("runtime stack mmap failed: ") +
                              std::strerror(errno));
   }
-
-  stack->base = mem;
-  stack->size = kStackSize;
 
   uintptr_t sp = reinterpret_cast<uintptr_t>(mem) + kStackSize;
   sp &= ~static_cast<uintptr_t>(0xFUL);
@@ -40,7 +36,7 @@ void setup_runtime_stack(const char *argv0, RuntimeStack *stack,
   push_u64(reinterpret_cast<uintptr_t>(argv0));
   push_u64(1);
 
-  *entry_sp = sp;
+  return RuntimeStack{mem, kStackSize, sp};
 }
 
 [[noreturn]] void jump_to_entry(uintptr_t entry, uintptr_t entry_sp) {

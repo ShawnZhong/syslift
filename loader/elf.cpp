@@ -1,9 +1,9 @@
 #include "elf.h"
 
-#include <cerrno>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <inttypes.h>
 #include <stdexcept>
 #include <string>
@@ -73,9 +73,8 @@ const Elf64_Shdr *find_section_by_name(const std::vector<uint8_t> &file,
   return nullptr;
 }
 
-void parse_syscall_table(const std::vector<uint8_t> &file,
-                         const Elf64_Ehdr &ehdr,
-                         std::vector<SysliftSyscallSite> *sites) {
+std::vector<SysliftSyscallSite> parse_syscall_table(const std::vector<uint8_t> &file,
+                                                    const Elf64_Ehdr &ehdr) {
   const Elf64_Shdr *table_sec =
       find_section_by_name(file, ehdr, kSyscallTableSection);
   if (table_sec == nullptr) {
@@ -95,61 +94,45 @@ void parse_syscall_table(const std::vector<uint8_t> &file,
   const uint8_t *table = file.data() + table_sec->sh_offset;
   const size_t count = table_sec->sh_size / sizeof(SysliftSyscallSite);
 
-  sites->clear();
-  sites->reserve(count);
+  std::vector<SysliftSyscallSite> sites;
+  sites.reserve(count);
   for (size_t i = 0; i < count; ++i) {
     size_t rec = i * sizeof(SysliftSyscallSite);
     SysliftSyscallSite site{};
     site.site_vaddr = read_u64_le(table + rec);
     site.sys_nr = read_u32_le(table + rec + 8);
     site.arg_known_mask = read_u32_le(table + rec + 12);
-    for (size_t arg = 0; arg < 6; ++arg) {
+    for (size_t arg = 0; arg < kSyscallArgCount; ++arg) {
       site.arg_values[arg] = read_u64_le(table + rec + 16 + arg * 8);
     }
-    sites->push_back(site);
+    sites.push_back(site);
   }
+  return sites;
 }
 
 } // namespace
 
-void read_whole_file(const char *path, std::vector<uint8_t> *out) {
-  FILE *fp = std::fopen(path, "rb");
-  if (fp == nullptr) {
-    throw std::runtime_error(std::string("failed to open: ") +
-                             std::strerror(errno));
+std::vector<uint8_t> read_whole_file(const char *path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    throw std::runtime_error("failed to open file");
   }
 
-  if (std::fseek(fp, 0, SEEK_END) != 0) {
-    int saved_errno = errno;
-    std::fclose(fp);
-    throw std::runtime_error(std::string("fseek failed: ") +
-                             std::strerror(saved_errno));
+  input.seekg(0, std::ios::end);
+  const std::streamoff size = input.tellg();
+  if (size < 0) {
+    throw std::runtime_error("failed to get file size");
   }
+  input.seekg(0, std::ios::beg);
 
-  long file_size_long = std::ftell(fp);
-  if (file_size_long < 0) {
-    int saved_errno = errno;
-    std::fclose(fp);
-    throw std::runtime_error(std::string("ftell failed: ") +
-                             std::strerror(saved_errno));
+  std::vector<uint8_t> out(static_cast<size_t>(size), 0);
+  if (size > 0 && !input.read(reinterpret_cast<char *>(out.data()), size)) {
+    throw std::runtime_error("failed to read file");
   }
-  if (std::fseek(fp, 0, SEEK_SET) != 0) {
-    int saved_errno = errno;
-    std::fclose(fp);
-    throw std::runtime_error(std::string("fseek failed: ") +
-                             std::strerror(saved_errno));
-  }
-
-  out->assign(static_cast<size_t>(file_size_long), 0);
-  if (!out->empty() && std::fread(out->data(), 1, out->size(), fp) != out->size()) {
-    std::fclose(fp);
-    throw std::runtime_error("fread failed");
-  }
-
-  std::fclose(fp);
+  return out;
 }
 
-void parse_elf(const std::vector<uint8_t> &file, ParsedElf *parsed) {
+ParsedElf parse_elf(const std::vector<uint8_t> &file) {
   if (!in_range(0, sizeof(Elf64_Ehdr), file.size())) {
     throw std::runtime_error("file too small for ELF header");
   }
@@ -174,11 +157,13 @@ void parse_elf(const std::vector<uint8_t> &file, ParsedElf *parsed) {
     throw std::runtime_error("program header table out of bounds");
   }
 
-  parsed->ehdr = *ehdr;
+  ParsedElf parsed;
+  parsed.ehdr = *ehdr;
   const auto *phdrs = reinterpret_cast<const Elf64_Phdr *>(file.data() + ehdr->e_phoff);
-  parsed->phdrs.assign(phdrs, phdrs + ehdr->e_phnum);
+  parsed.phdrs.assign(phdrs, phdrs + ehdr->e_phnum);
 
-  parse_syscall_table(file, parsed->ehdr, &parsed->syscall_sites);
+  parsed.syscall_sites = parse_syscall_table(file, parsed.ehdr);
+  return parsed;
 }
 
 void reject_if_text_contains_svc(const std::vector<uint8_t> &file,
@@ -262,7 +247,7 @@ void dump_syslift_table(const ParsedElf &parsed) {
                  i, site.site_vaddr, site.sys_nr);
 
     bool first = true;
-    for (uint32_t arg = 0; arg < 6; ++arg) {
+    for (uint32_t arg = 0; arg < kSyscallArgCount; ++arg) {
       if ((site.arg_known_mask & (1u << arg)) == 0u) {
         continue;
       }

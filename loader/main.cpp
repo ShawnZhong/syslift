@@ -75,18 +75,15 @@ int main(int argc, char **argv) {
     Options opts = parse_options(argc, argv);
     const char *elf_path = opts.elf_path.c_str();
 
-    std::vector<uint8_t> file;
-    syslift::read_whole_file(elf_path, &file);
+    std::vector<uint8_t> file = syslift::read_whole_file(elf_path);
 
-    syslift::ParsedElf parsed;
-    syslift::parse_elf(file, &parsed);
+    syslift::ParsedElf parsed = syslift::parse_elf(file);
     syslift::reject_if_text_contains_svc(file, parsed);
     if (opts.debug) {
       syslift::dump_syslift_table(parsed);
     }
 
-    syslift::Image image;
-    syslift::map_image(file, parsed, &image);
+    syslift::Image image = syslift::map_image(file, parsed);
 
     auto contains = [](const std::vector<uint32_t> &list, uint32_t value) {
       return std::find(list.begin(), list.end(), value) != list.end();
@@ -120,16 +117,13 @@ int main(int argc, char **argv) {
 
     syslift::apply_segment_protections(image);
 
-    syslift::RuntimeStack runtime_stack;
-    uintptr_t entry_sp = 0;
-    syslift::setup_runtime_stack(elf_path, &runtime_stack, &entry_sp);
+    syslift::RuntimeStack runtime_stack = syslift::setup_runtime_stack(elf_path);
 
     const uintptr_t entry = image.entry;
+    const uintptr_t entry_sp = runtime_stack.entry_sp;
     if (opts.debug) {
       std::fprintf(stderr, "start executing: entry=0x%" PRIxPTR "\n", entry);
     }
-    image.release();
-    runtime_stack.release();
     syslift::jump_to_entry(entry, entry_sp);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "%s\n", e.what());

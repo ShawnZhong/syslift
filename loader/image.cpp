@@ -58,8 +58,7 @@ bool is_in_exec_segment(const Image &image, uintptr_t addr) {
 
 } // namespace
 
-void map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed,
-               Image *image) {
+Image map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed) {
   const long page_size_long = sysconf(_SC_PAGESIZE);
   if (page_size_long <= 0) {
     throw std::runtime_error("failed to query page size");
@@ -98,14 +97,11 @@ void map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed,
     throw std::runtime_error(std::string("mmap failed: ") + std::strerror(errno));
   }
 
-  image->mapping_start = reinterpret_cast<uintptr_t>(base);
-  image->mapping_size = span;
-  image->page_size = page_size;
-  image->load_bias = image->mapping_start - min_page;
-  image->entry = image->load_bias + parsed.ehdr.e_entry;
-  image->segments.clear();
+  const uintptr_t mapping_start = reinterpret_cast<uintptr_t>(base);
+  const uintptr_t load_bias = mapping_start - min_page;
+  std::vector<Segment> segments;
 
-  const uintptr_t map_end = image->mapping_start + image->mapping_size;
+  const uintptr_t map_end = mapping_start + span;
 
   for (const Elf64_Phdr &ph : parsed.phdrs) {
     if (ph.p_type != PT_LOAD || ph.p_memsz == 0) {
@@ -115,9 +111,9 @@ void map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed,
       throw std::runtime_error("PT_LOAD file range out of bounds");
     }
 
-    const uintptr_t seg_start = image->load_bias + static_cast<uintptr_t>(ph.p_vaddr);
+    const uintptr_t seg_start = load_bias + static_cast<uintptr_t>(ph.p_vaddr);
     const uintptr_t seg_end = seg_start + static_cast<uintptr_t>(ph.p_memsz);
-    if (seg_start < image->mapping_start || seg_end > map_end || seg_start >= seg_end) {
+    if (seg_start < mapping_start || seg_end > map_end || seg_start >= seg_end) {
       throw std::runtime_error("PT_LOAD maps outside reserved range");
     }
 
@@ -130,10 +126,13 @@ void map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed,
     }
 
     const int seg_prot = phdr_flags_to_prot(ph.p_flags);
-    image->segments.push_back(
+    segments.push_back(
         Segment{seg_start, static_cast<size_t>(ph.p_memsz), seg_prot,
                 (seg_prot & PROT_EXEC) != 0});
   }
+
+  return Image{mapping_start, span, page_size, load_bias,
+               load_bias + parsed.ehdr.e_entry, std::move(segments)};
 }
 
 void patch_syscall(const SysliftSyscallSite &site, const Image &image) {

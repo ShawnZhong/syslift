@@ -31,19 +31,9 @@ struct Image {
       munmap(reinterpret_cast<void *>(mapping_start), mapping_size);
     }
   }
-
-  void release() {
-    mapping_start = 0;
-    mapping_size = 0;
-    page_size = 0;
-    load_bias = 0;
-    entry = 0;
-    segments.clear();
-  }
 };
 
-void map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed,
-               Image *image);
+Image map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed);
 
 void patch_syscall(const SysliftSyscallSite &site, const Image &image);
 
