@@ -19,7 +19,7 @@ Contract surface can include:
 - Filesystem behavior: path-level and mode-level intent (read/write/create/delete/rename, metadata operations).
 - Network behavior: domains, protocols, ports, DNS resolution behavior.
 - Process behavior: `execve`, `fork/clone`, signals, `ptrace`, `setns`, `setuid`, `capset`, and related process-control APIs.
-- Resource behavior: CPU time, memory footprint, file descriptors, threads, and rlimits.
+- Information-flow behavior (taint contracts): constrain how sensitive data can flow from sources (secrets, PII, credentials, key material) to sinks (logs, network, files, IPC, diagnostics).
 
 ## Quick Demo
 
