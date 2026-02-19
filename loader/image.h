@@ -42,12 +42,11 @@ struct Image {
   }
 };
 
-bool map_image(const char *path, const std::vector<uint8_t> &file,
-               const ParsedElf &parsed, Image *image);
+void map_image(const std::vector<uint8_t> &file, const ParsedElf &parsed,
+               Image *image);
 
-bool patch_syscalls(const char *path, const ParsedElf &parsed,
-                    const Image &image);
+void patch_syscall(const SysliftSyscallSite &site, const Image &image);
 
-bool apply_segment_protections(const char *path, const Image &image);
+void apply_segment_protections(const Image &image);
 
 } // namespace syslift

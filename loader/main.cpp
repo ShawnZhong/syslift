@@ -1,66 +1,125 @@
-#include "cli.h"
 #include "elf.h"
 #include "image.h"
 #include "runtime.h"
 
+#include <cxxopts.hpp>
 #include <inttypes.h>
 
+#include <algorithm>
 #include <cstdio>
-#include <cstdint>
+#include <cstdlib>
+#include <exception>
+#include <string>
 #include <vector>
 
-int main(int argc, char **argv) {
-  syslift::Options opts;
-  if (!syslift::parse_options(argc, argv, &opts)) {
-    return 1;
-  }
+namespace {
 
-  const char *elf_path = opts.elf_path.c_str();
+struct Options {
+  std::vector<uint32_t> allow;
+  std::vector<uint32_t> deny;
+  std::string elf_path;
+};
 
-  std::vector<uint8_t> file;
-  if (!syslift::read_whole_file(elf_path, &file)) {
-    return 1;
-  }
+Options parse_options(int argc, char **argv) {
+  cxxopts::Options parser(argv[0], "syslift loader");
+  parser.positional_help("<elf-file>");
+  parser.add_options()(
+      "allow", "Allow-list syscall numbers (comma-separated or repeated)",
+      cxxopts::value<std::vector<uint32_t>>())(
+      "deny", "Deny-list syscall numbers (comma-separated or repeated)",
+      cxxopts::value<std::vector<uint32_t>>())("h,help", "Show help")(
+      "elf", "ELF file", cxxopts::value<std::string>());
+  parser.parse_positional({"elf"});
 
-  syslift::ParsedElf parsed;
-  if (!syslift::parse_elf(elf_path, file, &parsed)) {
-    return 1;
-  }
-
-  std::vector<uint32_t> denied;
-  if (!syslift::evaluate_policy(parsed.syscall_sites, opts, &denied)) {
-    std::fprintf(stderr, "%s: policy denied %zu syscall number(s):", elf_path,
-                 denied.size());
-    for (uint32_t nr : denied) {
-      std::fprintf(stderr, " %" PRIu32, nr);
+  try {
+    auto result = parser.parse(argc, argv);
+    if (result.count("help") != 0) {
+      std::printf("%s\n", parser.help().c_str());
+      std::exit(0);
     }
-    std::fprintf(stderr, "\n");
-    return 1;
-  }
 
-  std::printf("%s: policy OK (%zu syscall site(s))\n", elf_path,
-              parsed.syscall_sites.size());
+    const bool allow_mode = result.count("allow") != 0;
+    const bool deny_mode = result.count("deny") != 0;
+    if (allow_mode && deny_mode) {
+      std::fprintf(stderr, "use either --allow or --deny, not both\n");
+      std::exit(1);
+    }
 
-  syslift::Image image;
-  if (!syslift::map_image(elf_path, file, parsed, &image)) {
-    return 1;
-  }
-  if (!syslift::patch_syscalls(elf_path, parsed, image)) {
-    return 1;
-  }
-  if (!syslift::apply_segment_protections(elf_path, image)) {
-    return 1;
-  }
+    if (result.count("elf") == 0) {
+      std::fprintf(stderr, "missing <elf-file>\n%s\n", parser.help().c_str());
+      std::exit(1);
+    }
 
-  syslift::RuntimeStack runtime_stack;
-  uintptr_t entry_sp = 0;
-  if (!syslift::setup_runtime_stack(elf_path, elf_path, &runtime_stack,
-                                    &entry_sp)) {
+    Options opts{};
+    if (allow_mode) {
+      opts.allow = result["allow"].as<std::vector<uint32_t>>();
+    }
+    if (deny_mode) {
+      opts.deny = result["deny"].as<std::vector<uint32_t>>();
+    }
+    opts.elf_path = result["elf"].as<std::string>();
+    return opts;
+  } catch (const cxxopts::exceptions::exception &e) {
+    std::fprintf(stderr, "%s\n%s\n", e.what(), parser.help().c_str());
+    std::exit(1);
+  }
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+  try {
+    Options opts = parse_options(argc, argv);
+    const char *elf_path = opts.elf_path.c_str();
+
+    std::vector<uint8_t> file;
+    syslift::read_whole_file(elf_path, &file);
+
+    syslift::ParsedElf parsed;
+    syslift::parse_elf(file, &parsed);
+
+    syslift::Image image;
+    syslift::map_image(file, parsed, &image);
+
+    auto contains = [](const std::vector<uint32_t> &list, uint32_t value) {
+      return std::find(list.begin(), list.end(), value) != list.end();
+    };
+
+    for (const syslift::SysliftSyscallSite &site : parsed.syscall_sites) {
+      bool should_patch = true;
+      if (!opts.allow.empty()) {
+        should_patch = contains(opts.allow, site.sys_nr);
+      } else if (!opts.deny.empty()) {
+        should_patch = !contains(opts.deny, site.sys_nr);
+      }
+
+      if (!should_patch) {
+        std::fprintf(stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
+                             " action=ENOSYS\n",
+                     site.site_vaddr, site.sys_nr);
+        continue;
+      }
+
+      syslift::patch_syscall(site, image);
+      std::fprintf(stderr,
+                   "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
+                   " action=PATCHED\n",
+                   site.site_vaddr, site.sys_nr);
+    }
+
+    syslift::apply_segment_protections(image);
+
+    syslift::RuntimeStack runtime_stack;
+    uintptr_t entry_sp = 0;
+    syslift::setup_runtime_stack(elf_path, &runtime_stack, &entry_sp);
+
+    const uintptr_t entry = image.entry;
+    std::fprintf(stderr, "start executing: entry=0x%" PRIxPTR "\n", entry);
+    image.release();
+    runtime_stack.release();
+    syslift::jump_to_entry(entry, entry_sp);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "%s\n", e.what());
     return 1;
   }
-
-  const uintptr_t entry = image.entry;
-  image.release();
-  runtime_stack.release();
-  syslift::jump_to_entry(entry, entry_sp);
 }

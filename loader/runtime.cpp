@@ -6,19 +6,20 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 namespace syslift {
 
-bool setup_runtime_stack(const char *path, const char *argv0,
-                         RuntimeStack *stack, uintptr_t *entry_sp) {
+void setup_runtime_stack(const char *argv0, RuntimeStack *stack,
+                         uintptr_t *entry_sp) {
   constexpr size_t kStackSize = 1UL << 20;
 
   void *mem = mmap(nullptr, kStackSize, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
   if (mem == MAP_FAILED) {
-    std::fprintf(stderr, "%s: runtime stack mmap failed: %s\n", path,
-                 std::strerror(errno));
-    return false;
+    throw std::runtime_error(std::string("runtime stack mmap failed: ") +
+                             std::strerror(errno));
   }
 
   stack->base = mem;
@@ -40,11 +41,9 @@ bool setup_runtime_stack(const char *path, const char *argv0,
   push_u64(1);
 
   *entry_sp = sp;
-  return true;
 }
 
 [[noreturn]] void jump_to_entry(uintptr_t entry, uintptr_t entry_sp) {
-#if defined(__aarch64__)
   __asm__ volatile(
       "mov sp, %0\n"
       "br %1\n"
@@ -52,13 +51,6 @@ bool setup_runtime_stack(const char *path, const char *argv0,
       : "r"(entry_sp), "r"(entry)
       : "memory");
   __builtin_unreachable();
-#else
-  (void)entry_sp;
-  using EntryFn = void (*)();
-  EntryFn fn = reinterpret_cast<EntryFn>(entry);
-  fn();
-  _exit(127);
-#endif
 }
 
 } // namespace syslift

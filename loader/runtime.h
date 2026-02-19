@@ -23,8 +23,8 @@ struct RuntimeStack {
   }
 };
 
-bool setup_runtime_stack(const char *path, const char *argv0,
-                         RuntimeStack *stack, uintptr_t *entry_sp);
+void setup_runtime_stack(const char *argv0, RuntimeStack *stack,
+                         uintptr_t *entry_sp);
 
 [[noreturn]] void jump_to_entry(uintptr_t entry, uintptr_t entry_sp);
 

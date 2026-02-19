@@ -20,9 +20,8 @@ struct ParsedElf {
   std::vector<SysliftSyscallSite> syscall_sites;
 };
 
-bool read_whole_file(const char *path, std::vector<uint8_t> *out);
+void read_whole_file(const char *path, std::vector<uint8_t> *out);
 
-bool parse_elf(const char *path, const std::vector<uint8_t> &file,
-               ParsedElf *parsed);
+void parse_elf(const std::vector<uint8_t> &file, ParsedElf *parsed);
 
 } // namespace syslift
