@@ -126,4 +126,4 @@ clang -O2 -Ithird_party/nolibc \
 
 - AArch64 only.
 - Loader currently accepts `ET_EXEC` AArch64 ELF64 little-endian binaries.
-- Detection currently targets inline asm containing `svc #0` with constant `{x8}` syscall number.
+- `svc #0` sites with constant `{x8}` are recorded in `.syslift`; non-constant `{x8}` sites emit a warning, are left unmodified, and are not recorded.

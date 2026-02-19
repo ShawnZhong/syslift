@@ -24,4 +24,7 @@ void read_whole_file(const char *path, std::vector<uint8_t> *out);
 
 void parse_elf(const std::vector<uint8_t> &file, ParsedElf *parsed);
 
+void reject_if_text_contains_svc(const std::vector<uint8_t> &file,
+                                 const ParsedElf &parsed);
+
 } // namespace syslift

@@ -3,11 +3,14 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <inttypes.h>
 #include <stdexcept>
 #include <string>
 
 namespace syslift {
 namespace {
+
+static constexpr uint32_t kSvc0Insn = 0xD4000001u;
 
 bool in_range(size_t off, size_t len, size_t total) {
   return off <= total && len <= total - off;
@@ -31,9 +34,9 @@ uint64_t read_u64_le(const uint8_t *p) {
          (static_cast<uint64_t>(p[7]) << 56);
 }
 
-void parse_syscall_table(const std::vector<uint8_t> &file,
-                         const Elf64_Ehdr &ehdr,
-                         std::vector<SysliftSyscallSite> *sites) {
+const Elf64_Shdr *find_section_by_name(const std::vector<uint8_t> &file,
+                                       const Elf64_Ehdr &ehdr,
+                                       const char *name) {
   if (ehdr.e_shentsize != sizeof(Elf64_Shdr) || ehdr.e_shnum == 0) {
     throw std::runtime_error("invalid section header table");
   }
@@ -43,7 +46,8 @@ void parse_syscall_table(const std::vector<uint8_t> &file,
     throw std::runtime_error("section header table out of bounds");
   }
 
-  const auto *shdrs = reinterpret_cast<const Elf64_Shdr *>(file.data() + ehdr.e_shoff);
+  const auto *shdrs =
+      reinterpret_cast<const Elf64_Shdr *>(file.data() + ehdr.e_shoff);
   if (ehdr.e_shstrndx == SHN_UNDEF || ehdr.e_shstrndx >= ehdr.e_shnum) {
     throw std::runtime_error("invalid section name string table index");
   }
@@ -55,36 +59,40 @@ void parse_syscall_table(const std::vector<uint8_t> &file,
 
   const char *shstrtab = reinterpret_cast<const char *>(file.data() + shstr.sh_offset);
 
-  int table_idx = -1;
   for (uint16_t i = 0; i < ehdr.e_shnum; ++i) {
     const Elf64_Shdr &sec = shdrs[i];
     if (sec.sh_name >= shstr.sh_size) {
       continue;
     }
-    const char *name = shstrtab + sec.sh_name;
-    if (std::strcmp(name, kSyscallTableSection) == 0) {
-      table_idx = static_cast<int>(i);
-      break;
+    if (std::strcmp(shstrtab + sec.sh_name, name) == 0) {
+      return &sec;
     }
   }
 
-  if (table_idx < 0) {
+  return nullptr;
+}
+
+void parse_syscall_table(const std::vector<uint8_t> &file,
+                         const Elf64_Ehdr &ehdr,
+                         std::vector<SysliftSyscallSite> *sites) {
+  const Elf64_Shdr *table_sec =
+      find_section_by_name(file, ehdr, kSyscallTableSection);
+  if (table_sec == nullptr) {
     throw std::runtime_error(std::string("missing ") + kSyscallTableSection +
                              " section");
   }
 
-  const Elf64_Shdr &table_sec = shdrs[table_idx];
-  if (!in_range(table_sec.sh_offset, table_sec.sh_size, file.size())) {
+  if (!in_range(table_sec->sh_offset, table_sec->sh_size, file.size())) {
     throw std::runtime_error(std::string(kSyscallTableSection) +
                              " section out of bounds");
   }
-  if (table_sec.sh_size % sizeof(SysliftSyscallSite) != 0) {
+  if (table_sec->sh_size % sizeof(SysliftSyscallSite) != 0) {
     throw std::runtime_error(std::string("invalid ") + kSyscallTableSection +
                              " section size");
   }
 
-  const uint8_t *table = file.data() + table_sec.sh_offset;
-  const size_t count = table_sec.sh_size / sizeof(SysliftSyscallSite);
+  const uint8_t *table = file.data() + table_sec->sh_offset;
+  const size_t count = table_sec->sh_size / sizeof(SysliftSyscallSite);
 
   sites->clear();
   sites->reserve(count);
@@ -166,6 +174,65 @@ void parse_elf(const std::vector<uint8_t> &file, ParsedElf *parsed) {
   parsed->phdrs.assign(phdrs, phdrs + ehdr->e_phnum);
 
   parse_syscall_table(file, parsed->ehdr, &parsed->syscall_sites);
+}
+
+void reject_if_text_contains_svc(const std::vector<uint8_t> &file,
+                                 const ParsedElf &parsed) {
+  if (parsed.ehdr.e_shentsize != sizeof(Elf64_Shdr) ||
+      parsed.ehdr.e_shnum == 0) {
+    throw std::runtime_error("invalid section header table");
+  }
+  const size_t shdr_size =
+      static_cast<size_t>(parsed.ehdr.e_shnum) * sizeof(Elf64_Shdr);
+  if (!in_range(parsed.ehdr.e_shoff, shdr_size, file.size())) {
+    throw std::runtime_error("section header table out of bounds");
+  }
+
+  const auto *shdrs =
+      reinterpret_cast<const Elf64_Shdr *>(file.data() + parsed.ehdr.e_shoff);
+  if (parsed.ehdr.e_shstrndx == SHN_UNDEF ||
+      parsed.ehdr.e_shstrndx >= parsed.ehdr.e_shnum) {
+    throw std::runtime_error("invalid section name string table index");
+  }
+
+  const Elf64_Shdr &shstr = shdrs[parsed.ehdr.e_shstrndx];
+  if (!in_range(shstr.sh_offset, shstr.sh_size, file.size())) {
+    throw std::runtime_error("section name string table out of bounds");
+  }
+  const char *shstrtab =
+      reinterpret_cast<const char *>(file.data() + shstr.sh_offset);
+
+  for (uint16_t i = 0; i < parsed.ehdr.e_shnum; ++i) {
+    const Elf64_Shdr &sec = shdrs[i];
+    if (sec.sh_name >= shstr.sh_size || sec.sh_size < sizeof(uint32_t)) {
+      continue;
+    }
+
+    const char *name = shstrtab + sec.sh_name;
+    if (std::strncmp(name, ".text", 5) != 0) {
+      continue;
+    }
+    if (!in_range(sec.sh_offset, sec.sh_size, file.size())) {
+      throw std::runtime_error("text section out of bounds");
+    }
+
+    const uint8_t *text = file.data() + sec.sh_offset;
+    const size_t start_off =
+        static_cast<size_t>((4 - (sec.sh_addr & 0x3U)) & 0x3U);
+    for (size_t off = start_off; off + sizeof(uint32_t) <= sec.sh_size;
+         off += 4) {
+      if (read_u32_le(text + off) != kSvc0Insn) {
+        continue;
+      }
+
+      char msg[192];
+      const uint64_t site_vaddr = sec.sh_addr + static_cast<uint64_t>(off);
+      std::snprintf(msg, sizeof(msg),
+                    "Rejecting svc #0 in %s at vaddr=0x%" PRIx64, name,
+                    site_vaddr);
+      throw std::runtime_error(msg);
+    }
+  }
 }
 
 } // namespace syslift

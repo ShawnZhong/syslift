@@ -7,7 +7,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
@@ -156,16 +156,18 @@ public:
 
           std::optional<uint32_t> SysNr = extractSyscallNumber(*CB, *IA);
           if (!SysNr.has_value()) {
-            report_fatal_error(
-                Twine("SysliftCollectSyscallsPass: unable to prove constant x8 for "
-                      "syscall site in function ") +
-                F.getName());
+            WithColor::warning(errs(), "SysliftCollectSyscallsPass")
+                << "unable to prove constant x8 for syscall site in function "
+                << F.getName()
+                << "; leaving site unmodified and not recording .syslift entry\n";
+            continue;
           }
           if (isAlwaysAllowedSyscall(SysNr.value())) {
             continue;
           }
 
-          const uint64_t SiteId = GlobalSiteId.fetch_add(1, std::memory_order_relaxed);
+          const uint64_t SiteId =
+              GlobalSiteId.fetch_add(1, std::memory_order_relaxed);
           const std::string SiteLabel =
               (Twine("__syslift_syscall_site_") + Twine(SiteId)).str();
 
