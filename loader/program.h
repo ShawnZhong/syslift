@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace syslift {
@@ -29,11 +30,11 @@ struct Program {
   std::vector<SysliftSyscallSite> syscall_sites;
 };
 
-Program parse_elf(const char *path);
+Program parse_elf(const std::string &path);
 
-void reject_if_text_contains_svc(const Program &parsed);
+void reject_if_executable_contains_svc(const Segment &segment);
 
-void reject_if_unknown_syscall_nr(const Program &parsed);
+void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site);
 
 void patch_syscall_to_svc(Program &parsed, const SysliftSyscallSite &site);
 

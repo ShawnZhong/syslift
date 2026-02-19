@@ -121,12 +121,16 @@ void patch_program_syscall(syslift::Program &program,
 void execute_program(const Options &opts) {
   const char *elf_path = opts.elf_path.c_str();
 
-  syslift::Program program = syslift::parse_elf(elf_path);
-  syslift::reject_if_text_contains_svc(program);
+  syslift::Program program = syslift::parse_elf(opts.elf_path);
   if (opts.debug) {
     syslift::dump_syslift_table(program);
   }
-  syslift::reject_if_unknown_syscall_nr(program);
+  for (const syslift::Segment &segment : program.segments) {
+    syslift::reject_if_executable_contains_svc(segment);
+  }
+  for (const syslift::SysliftSyscallSite &site : program.syscall_sites) {
+    syslift::reject_if_unknown_syscall_nr(site);
+  }
 
   uintptr_t hook_stub_addr = 0;
   if (!opts.hook.empty()) {

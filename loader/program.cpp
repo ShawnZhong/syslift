@@ -11,6 +11,7 @@
 #include <cstring>
 #include <inttypes.h>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -73,6 +74,12 @@ uint32_t encode_bl_insn(uintptr_t from, uintptr_t to) {
   return kBlInsnBase | (static_cast<uint32_t>(imm26) & 0x03FFFFFFu);
 }
 
+std::string hex_u64(uint64_t value) {
+  std::ostringstream os;
+  os << "0x" << std::hex << value;
+  return os.str();
+}
+
 std::pair<Segment *, size_t> find_executable_site(Program &parsed,
                                                    uint64_t site_vaddr) {
   for (Segment &seg : parsed.segments) {
@@ -122,7 +129,7 @@ std::vector<SysliftSyscallSite> parse_syscall_table(const ELFIO::elfio &reader) 
 
 } // namespace
 
-Program parse_elf(const char *path) {
+Program parse_elf(const std::string &path) {
   ELFIO::elfio reader;
   if (!reader.load(path)) {
     throw std::runtime_error("failed to parse ELF");
@@ -175,60 +182,38 @@ Program parse_elf(const char *path) {
   return parsed;
 }
 
-void reject_if_text_contains_svc(const Program &parsed) {
-  std::vector<uint64_t> trusted_sites;
-  trusted_sites.reserve(parsed.syscall_sites.size());
-  for (const SysliftSyscallSite &site : parsed.syscall_sites) {
-    trusted_sites.push_back(site.site_vaddr);
+void reject_if_executable_contains_svc(const Segment &segment) {
+  if ((segment.prot & PROT_EXEC) == 0 ||
+      segment.data.size() < sizeof(uint32_t)) {
+    return;
   }
-  std::sort(trusted_sites.begin(), trusted_sites.end());
 
-  for (size_t seg_index = 0; seg_index < parsed.segments.size(); ++seg_index) {
-    const Segment &seg = parsed.segments[seg_index];
-    if ((seg.prot & PROT_EXEC) == 0 || seg.data.size() < sizeof(uint32_t)) {
+  const uint8_t *text = segment.data.data();
+  const size_t start_off =
+      static_cast<size_t>((4 - (segment.start & 0x3U)) & 0x3U);
+  for (size_t off = start_off; off + sizeof(uint32_t) <= segment.data.size();
+       off += 4) {
+    uint32_t insn = 0;
+    std::memcpy(&insn, text + off, sizeof(insn));
+    if (insn != kSvc0Insn) {
       continue;
     }
 
-    const uint8_t *text = seg.data.data();
-    const size_t start_off =
-        static_cast<size_t>((4 - (seg.start & 0x3U)) & 0x3U);
-    for (size_t off = start_off; off + sizeof(uint32_t) <= seg.data.size();
-         off += 4) {
-      uint32_t insn = 0;
-      std::memcpy(&insn, text + off, sizeof(insn));
-      if (insn != kSvc0Insn) {
-        continue;
-      }
-
-      const uint64_t site_vaddr = seg.start + static_cast<uint64_t>(off);
-      if (std::binary_search(trusted_sites.begin(), trusted_sites.end(),
-                             site_vaddr)) {
-        continue;
-      }
-
-      char msg[192];
-      std::snprintf(msg, sizeof(msg),
-                    "untrusted input: svc #0 not listed in .syslift (PT_LOAD[%zu] "
-                    "vaddr=0x%" PRIx64 ")",
-                    seg_index, site_vaddr);
-      throw std::runtime_error(msg);
-    }
+    const uint64_t site_vaddr = segment.start + static_cast<uint64_t>(off);
+    throw std::runtime_error(
+        "untrusted input: svc #0 found in executable segment (vaddr=" +
+        hex_u64(site_vaddr) + ")");
   }
 }
 
-void reject_if_unknown_syscall_nr(const Program &parsed) {
-  for (const SysliftSyscallSite &site : parsed.syscall_sites) {
-    if ((site.known_mask & kSyscallNrBit) != 0u) {
-      continue;
-    }
-
-    char msg[160];
-    std::snprintf(msg, sizeof(msg),
-                  "untrusted input: unknown syscall nr in .syslift "
-                  "(site_vaddr=0x%" PRIx64 ")",
-                  site.site_vaddr);
-    throw std::runtime_error(msg);
+void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site) {
+  if ((site.known_mask & kSyscallNrBit) != 0u) {
+    return;
   }
+
+  throw std::runtime_error("untrusted input: unknown syscall nr in .syslift "
+                           "(site_vaddr=" +
+                           hex_u64(site.site_vaddr) + ")");
 }
 
 void patch_syscall_to_svc(Program &parsed, const SysliftSyscallSite &site) {
