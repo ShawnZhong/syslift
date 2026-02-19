@@ -26,6 +26,9 @@ struct Image {
   uintptr_t entry = 0;
   std::vector<Segment> segments;
 
+  Image(const Image &) = delete;
+  Image &operator=(const Image &) = delete;
+
   ~Image() {
     if (mapping_start != 0 && mapping_size != 0) {
       munmap(reinterpret_cast<void *>(mapping_start), mapping_size);

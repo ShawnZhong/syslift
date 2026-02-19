@@ -12,6 +12,9 @@ struct RuntimeStack {
   size_t size = 0;
   uintptr_t entry_sp = 0;
 
+  RuntimeStack(const RuntimeStack &) = delete;
+  RuntimeStack &operator=(const RuntimeStack &) = delete;
+
   ~RuntimeStack() {
     if (base != nullptr && size != 0) {
       munmap(base, size);
