@@ -82,6 +82,7 @@ int main(int argc, char **argv) {
     if (opts.debug) {
       syslift::dump_syslift_table(parsed);
     }
+    syslift::reject_if_unknown_syscall_nr(parsed);
 
     syslift::Image image = syslift::map_image(file, parsed);
 
@@ -90,18 +91,19 @@ int main(int argc, char **argv) {
     };
 
     for (const syslift::SysliftSyscallSite &site : parsed.syscall_sites) {
+      const uint32_t sys_nr = static_cast<uint32_t>(site.values[0]);
       bool should_patch = true;
       if (!opts.allow.empty()) {
-        should_patch = contains(opts.allow, site.sys_nr);
+        should_patch = contains(opts.allow, sys_nr);
       } else if (!opts.deny.empty()) {
-        should_patch = !contains(opts.deny, site.sys_nr);
+        should_patch = !contains(opts.deny, sys_nr);
       }
 
       if (!should_patch) {
         if (opts.debug) {
           std::fprintf(stderr, "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
                                " action=ENOSYS\n",
-                       site.site_vaddr, site.sys_nr);
+                       site.site_vaddr, sys_nr);
         }
         continue;
       }
@@ -111,7 +113,7 @@ int main(int argc, char **argv) {
         std::fprintf(stderr,
                      "site_vaddr=0x%" PRIx64 " sys_nr=%" PRIu32
                      " action=PATCHED\n",
-                     site.site_vaddr, site.sys_nr);
+                     site.site_vaddr, sys_nr);
       }
     }
 

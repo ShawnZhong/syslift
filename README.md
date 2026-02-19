@@ -29,6 +29,14 @@ Contract surface can include:
 
 ```diff
 Running: `build/loader --debug --allow 93,172 build/getpid`
+.syslift entries=7
+table[0] site_vaddr=0x400298 vals=[ 64,   1,   ?,  14,   ?,   ?,   ?]
+table[1] site_vaddr=0x4002f0 vals=[ 93,   ?,   ?,   ?,   ?,   ?,   ?]
+table[2] site_vaddr=0x40035c vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
+table[3] site_vaddr=0x40036c vals=[129,   ?,   ?,   ?,   ?,   ?,   ?]
+table[4] site_vaddr=0x40055c vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
+table[5] site_vaddr=0x40056c vals=[129,   ?,   6,   ?,   ?,   ?,   ?]
+table[6] site_vaddr=0x400328 vals=[ 64,   1,   ?,  14,   ?,   ?,   ?]
 site_vaddr=0x400280 sys_nr=172 action=PATCHED
 site_vaddr=0x4002b8 sys_nr=93 action=PATCHED
 site_vaddr=0x4002e4 sys_nr=172 action=PATCHED
@@ -58,13 +66,13 @@ pid: -38
 - exit=1
 
 Running: `build/loader build/reject`
-untrusted input: svc #0 not listed in .syslift (.text vaddr=0x400288)
+untrusted input: unknown syscall nr in .syslift (site_vaddr=0x400288)
 - exit=1
 ```
 
 ## Current Implementation (AArch64)
 
-The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds `svc #0` inline-asm sites, records them in `.syslift` (syscall number plus x0..x5 compile-time-known metadata), and rewrites constant-`x8` syscall sites to return `-ENOSYS` by default.
+The LLVM pass (`pass/SysliftCollectSyscalls.cpp`) finds `svc #0` inline-asm sites, records them in `.syslift` (nr + arg1..arg6 value/knownness metadata), and rewrites syscall sites to return `-ENOSYS` by default.
 
 The loader (`build/loader`) reads `.syslift` at load time and patches selected sites back to `svc #0` according to policy flags.
 
@@ -90,7 +98,7 @@ Policy:
 - passing both `--allow` and `--deny` is an error
 - in `--allow` mode, include `93` (`exit`) if you want normal program termination
 
-`--debug` prints per-site decisions and entry address.
+`--debug` prints parsed `.syslift` entries (`vals=[nr,arg1..arg6]` with `?` for unknown), per-site patch decisions, and entry address.
 
 ## ELF Metadata
 
@@ -99,9 +107,8 @@ Section name: `.syslift`
 ```c
 struct SysliftSyscallSite {
   uint64_t site_vaddr;
-  uint32_t sys_nr;
-  uint32_t arg_known_mask;   // bit i => xi is compile-time known (i in [0,5])
-  uint64_t arg_values[6];    // value for x0..x5 when known
+  uint32_t known_mask;       // bit0=nr, bit1..6=arg1..arg6
+  uint64_t values[7];        // [0]=nr, [1..6]=arg1..arg6
 } __attribute__((packed));
 ```
 
@@ -125,6 +132,6 @@ clang -O2 -Ithird_party/nolibc \
 
 - AArch64 only.
 - Loader currently accepts `ET_EXEC` AArch64 ELF64 little-endian binaries.
-- `svc #0` sites with constant `{x8}` are recorded in `.syslift`; non-constant `{x8}` sites emit a warning, are left unmodified, and are not recorded.
+- `svc #0` sites are always recorded in `.syslift`; sites are rewritten to `-ENOSYS` by default, and non-constant `{x8}` sites are rejected by the loader because `nr` is unknown.
 - Loader rejects binaries if it finds any `svc #0` in `.text*` whose address is not listed in `.syslift`.
 - Loader enforces W^X at mapping time: writable load segments are mapped non-executable.

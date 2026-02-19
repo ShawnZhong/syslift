@@ -11,9 +11,9 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
-#include <atomic>
 #include <array>
-#include <cstdint>
+#include <atomic>
+#include <cerrno>
 #include <limits>
 #include <optional>
 #include <string>
@@ -23,8 +23,8 @@ using namespace llvm;
 namespace {
 
 static constexpr char SysliftSyscallTableSection[] = ".syslift";
-static constexpr int64_t AArch64NegEnosys = -38;
-static constexpr unsigned AArch64SyscallArgCount = 6;
+static constexpr unsigned SysliftValueCount = 7;
+static constexpr uint32_t SysliftNrBit = 1u << 0;
 
 static cl::opt<std::string> SysliftSectionName(
     "syslift-section",
@@ -60,67 +60,9 @@ static std::optional<unsigned> parseAArch64RegFromConstraintCode(StringRef Code)
   return RegNum;
 }
 
-struct SyscallInputMap {
-  std::optional<unsigned> X8ArgIndex;
-  std::array<std::optional<unsigned>, AArch64SyscallArgCount> XArgIndices{};
-};
-
-static SyscallInputMap buildSyscallInputMap(const InlineAsm &IA) {
-  InlineAsm::ConstraintInfoVector Constraints = IA.ParseConstraints();
-  unsigned ArgIndex = 0;
-  SyscallInputMap Map;
-
-  for (const InlineAsm::ConstraintInfo &Constraint : Constraints) {
-    if (!Constraint.hasArg()) {
-      continue;
-    }
-
-    const bool IsInput = Constraint.Type == InlineAsm::isInput;
-    if (IsInput) {
-      for (const std::string &Code : Constraint.Codes) {
-        std::optional<unsigned> Reg = parseAArch64RegFromConstraintCode(Code);
-        if (!Reg.has_value()) {
-          continue;
-        }
-        if (Reg.value() == 8) {
-          Map.X8ArgIndex = ArgIndex;
-        } else if (Reg.value() < AArch64SyscallArgCount) {
-          Map.XArgIndices[Reg.value()] = ArgIndex;
-        }
-      }
-    }
-
-    ++ArgIndex;
-  }
-
-  return Map;
-}
-
-static std::optional<uint32_t> extractSyscallNumber(const CallBase &CB,
-                                                    const InlineAsm &IA) {
-  const SyscallInputMap Map = buildSyscallInputMap(IA);
-  std::optional<unsigned> X8ArgIdx = Map.X8ArgIndex;
-  if (!X8ArgIdx.has_value() || X8ArgIdx.value() >= CB.arg_size()) {
-    return std::nullopt;
-  }
-
-  const Value *Arg = CB.getArgOperand(X8ArgIdx.value());
-  const auto *Imm = dyn_cast<ConstantInt>(Arg);
-  if (Imm == nullptr) {
-    return std::nullopt;
-  }
-  if (Imm->isNegative()) {
-    return std::nullopt;
-  }
-  if (Imm->getValue().ugt(std::numeric_limits<uint32_t>::max())) {
-    return std::nullopt;
-  }
-  return static_cast<uint32_t>(Imm->getZExtValue());
-}
-
 struct SyscallArgMetadata {
   uint32_t KnownMask = 0;
-  std::array<uint64_t, AArch64SyscallArgCount> Values{};
+  std::array<uint64_t, SysliftValueCount> Values{};
 };
 
 static std::optional<uint64_t> extractKnownArgValue(const Value *Arg) {
@@ -139,23 +81,48 @@ static std::optional<uint64_t> extractKnownArgValue(const Value *Arg) {
 
 static SyscallArgMetadata collectSyscallArgMetadata(const CallBase &CB,
                                                     const InlineAsm &IA) {
-  const SyscallInputMap Map = buildSyscallInputMap(IA);
+  InlineAsm::ConstraintInfoVector Constraints = IA.ParseConstraints();
+  unsigned ArgIndex = 0;
   SyscallArgMetadata Meta;
 
-  for (unsigned Reg = 0; Reg < AArch64SyscallArgCount; ++Reg) {
-    const std::optional<unsigned> ArgIdx = Map.XArgIndices[Reg];
-    if (!ArgIdx.has_value() || ArgIdx.value() >= CB.arg_size()) {
+  for (const InlineAsm::ConstraintInfo &Constraint : Constraints) {
+    if (!Constraint.hasArg()) {
+      continue;
+    }
+    const unsigned ThisArgIndex = ArgIndex++;
+    if (Constraint.Type != InlineAsm::isInput ||
+        ThisArgIndex >= CB.arg_size()) {
       continue;
     }
 
-    const Value *Arg = CB.getArgOperand(ArgIdx.value());
-    std::optional<uint64_t> KnownValue = extractKnownArgValue(Arg);
-    if (!KnownValue.has_value()) {
-      continue;
-    }
+    const Value *Arg = CB.getArgOperand(ThisArgIndex);
+    for (const std::string &Code : Constraint.Codes) {
+      std::optional<unsigned> Reg = parseAArch64RegFromConstraintCode(Code);
+      if (!Reg.has_value()) {
+        continue;
+      }
 
-    Meta.KnownMask |= (1u << Reg);
-    Meta.Values[Reg] = KnownValue.value();
+      if (Reg.value() == 8) {
+        if (const auto *Imm = dyn_cast<ConstantInt>(Arg);
+            Imm != nullptr && !Imm->isNegative() &&
+            !Imm->getValue().ugt(std::numeric_limits<uint32_t>::max())) {
+          Meta.KnownMask |= SysliftNrBit;
+          Meta.Values[0] = Imm->getZExtValue();
+        }
+        continue;
+      }
+
+      if (Reg.value() + 1 >= SysliftValueCount) {
+        continue;
+      }
+
+      std::optional<uint64_t> KnownValue = extractKnownArgValue(Arg);
+      if (!KnownValue.has_value()) {
+        continue;
+      }
+      Meta.KnownMask |= (1u << (Reg.value() + 1));
+      Meta.Values[Reg.value() + 1] = KnownValue.value();
+    }
   }
 
   return Meta;
@@ -163,15 +130,13 @@ static SyscallArgMetadata collectSyscallArgMetadata(const CallBase &CB,
 
 static std::string buildSectionEntryAsm(StringRef SectionName,
                                         StringRef SiteLabel,
-                                        uint32_t SysNr,
                                         const SyscallArgMetadata &ArgMeta) {
   std::string Asm;
   raw_string_ostream OS(Asm);
   OS << "\t.pushsection " << SectionName << ",\"a\",@progbits\n";
   OS << "\t.xword " << SiteLabel << "\n";
-  OS << "\t.word " << SysNr << "\n";
   OS << "\t.word " << ArgMeta.KnownMask << "\n";
-  for (unsigned I = 0; I < AArch64SyscallArgCount; ++I) {
+  for (unsigned I = 0; I < SysliftValueCount; ++I) {
     OS << "\t.xword " << ArgMeta.Values[I] << "\n";
   }
   OS << "\t.popsection\n";
@@ -182,7 +147,7 @@ static std::string buildPatchedSiteAsm(StringRef SiteLabel) {
   std::string Asm;
   raw_string_ostream OS(Asm);
   OS << SiteLabel << ":\n";
-  OS << "\tmov x0, #" << AArch64NegEnosys << "\n";
+  OS << "\tmov x0, #" << -ENOSYS << "\n";
   return Asm;
 }
 
@@ -227,14 +192,6 @@ public:
             continue;
           }
 
-          std::optional<uint32_t> SysNr = extractSyscallNumber(*CB, *IA);
-          if (!SysNr.has_value()) {
-            WithColor::warning(errs(), "SysliftCollectSyscallsPass")
-                << "unable to prove constant x8 for syscall site in function "
-                << F.getName()
-                << "; leaving site unmodified and not recording .syslift entry\n";
-            continue;
-          }
           const SyscallArgMetadata ArgMeta = collectSyscallArgMetadata(*CB, *IA);
 
           const uint64_t SiteId =
@@ -242,16 +199,22 @@ public:
           const std::string SiteLabel =
               (Twine("__syslift_syscall_site_") + Twine(SiteId)).str();
 
-          M.appendModuleInlineAsm(buildSectionEntryAsm(SysliftSectionName,
-                                                       SiteLabel, SysNr.value(),
-                                                       ArgMeta));
+          M.appendModuleInlineAsm(
+              buildSectionEntryAsm(SysliftSectionName, SiteLabel, ArgMeta));
+
+          Changed = true;
+          if ((ArgMeta.KnownMask & SysliftNrBit) == 0u) {
+            WithColor::warning(errs(), "SysliftCollectSyscallsPass")
+                << "unable to prove constant x8 for syscall site in function "
+                << F.getName()
+                << "; recorded site with nr unknown for loader rejection\n";
+          }
 
           InlineAsm *Replacement = InlineAsm::get(
               IA->getFunctionType(), buildPatchedSiteAsm(SiteLabel),
               IA->getConstraintString(), IA->hasSideEffects(), IA->isAlignStack(),
               IA->getDialect(), IA->canThrow());
           CB->setCalledOperand(Replacement);
-          Changed = true;
         }
       }
     }
