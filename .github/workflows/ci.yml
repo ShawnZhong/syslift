@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: ./install_deps.sh
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Run loader checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            aarch64|arm64)
+              NR_EXIT=93
+              NR_GETPID=172
+              NR_WRITE=64
+              ;;
+            x86_64|amd64)
+              NR_EXIT=60
+              NR_GETPID=39
+              NR_WRITE=1
+              ;;
+            *)
+              echo "unsupported host arch: $ARCH"
+              exit 1
+              ;;
+          esac
+
+          run_expect_ok() {
+            echo "+ $*"
+            "$@"
+          }
+
+          run_expect_fail() {
+            echo "+ $* (expect failure)"
+            if "$@"; then
+              echo "command unexpectedly succeeded: $*"
+              exit 1
+            fi
+          }
+
+          run_expect_ok build/loader --debug --allow "$NR_EXIT,$NR_GETPID" build/getpid
+          run_expect_ok build/loader --hook "$NR_GETPID,$NR_EXIT" build/getpid
+          run_expect_fail build/loader --deny "$NR_GETPID" build/getpid
+
+          run_expect_ok build/loader build/write
+          run_expect_fail build/loader --deny "$NR_WRITE" build/write
+
+          run_expect_ok build/loader build/print_pid
+          run_expect_fail build/loader --deny "$NR_GETPID" build/print_pid
+
+          run_expect_ok build/loader build/print_args -- one two three
+          run_expect_fail build/loader --debug build/reject
