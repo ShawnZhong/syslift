@@ -120,7 +120,7 @@ void execute_program(const Options &opts) {
     syslift::dump_program(program);
   }
   for (const syslift::Segment &segment : program.segments) {
-    syslift::reject_if_executable_contains_syscall(program, segment);
+    syslift::reject_if_executable_contains_syscall(segment, program.arch);
   }
   for (const syslift::SysliftSyscallSite &site : program.syscall_sites) {
     syslift::reject_if_unknown_syscall_nr(site);

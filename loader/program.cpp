@@ -235,17 +235,17 @@ Program parse_elf(const std::string &path) {
   return parsed;
 }
 
-void reject_if_executable_contains_syscall(const Program &program,
-                                           const Segment &segment) {
+void reject_if_executable_contains_syscall(const Segment &segment,
+                                           ProgramArch arch) {
   if ((segment.prot & PROT_EXEC) == 0 || segment.data.empty()) {
     return;
   }
 
   std::optional<size_t> off;
-  if (program.arch == ProgramArch::AArch64) {
+  if (arch == ProgramArch::AArch64) {
     const size_t start_off = static_cast<size_t>((4 - (segment.start & 0x3U)) & 0x3U);
     off = find_raw_syscall_offset(segment, kAArch64SvcInsn, start_off, 4);
-  } else if (program.arch == ProgramArch::X86_64) {
+  } else if (arch == ProgramArch::X86_64) {
     off = find_raw_syscall_offset(segment, kX86SyscallInsn, 0, 1);
   } else {
     throw std::runtime_error("unsupported arch");

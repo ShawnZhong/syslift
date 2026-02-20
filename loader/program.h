@@ -38,8 +38,8 @@ struct Program {
 
 Program parse_elf(const std::string &path);
 
-void reject_if_executable_contains_syscall(const Program &program,
-                                           const Segment &segment);
+void reject_if_executable_contains_syscall(const Segment &segment,
+                                           ProgramArch arch);
 
 void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site);
 
