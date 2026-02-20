@@ -91,16 +91,6 @@ std::string hex_u64(uint64_t value) {
   return os.str();
 }
 
-const char *arch_name(ProgramArch arch) {
-  switch (arch) {
-  case ProgramArch::AArch64:
-    return "AArch64";
-  case ProgramArch::X86_64:
-    return "x86_64";
-  }
-  throw std::runtime_error("unsupported arch");
-}
-
 template <size_t N>
 std::optional<size_t> find_raw_syscall_offset(
     const Segment &segment, const std::array<uint8_t, N> &insn, size_t start_off,
@@ -267,8 +257,7 @@ void reject_if_executable_contains_syscall(const Program &program,
   const uint64_t site_vaddr = segment.start + static_cast<uint64_t>(off.value());
   throw std::runtime_error(
       "untrusted input: syscall instruction found in executable segment "
-      "(vaddr=" +
-      hex_u64(site_vaddr) + ", arch=" + arch_name(program.arch) + ")");
+      "(vaddr=" + hex_u64(site_vaddr) + ")");
 }
 
 void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site) {
@@ -375,7 +364,6 @@ uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {
 
 void dump_program(const Program &parsed) {
   const std::vector<SysliftSyscallSite> &sites = parsed.syscall_sites;
-  std::fprintf(stderr, "detected ELF arch: %s\n", arch_name(parsed.arch));
   std::fprintf(stderr, ".syslift entries=%zu\n", sites.size());
   for (size_t i = 0; i < sites.size(); ++i) {
     const SysliftSyscallSite &site = sites[i];
