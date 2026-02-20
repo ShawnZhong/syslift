@@ -1,5 +1,8 @@
-CC := clang
-CXX := clang++
+LLVM_VERSION ?= 18
+
+CC := clang-$(LLVM_VERSION)
+CXX := clang++-$(LLVM_VERSION)
+LLVM_CONFIG := llvm-config-$(LLVM_VERSION)
 
 CFLAGS ?= -O2 -Wall -Wextra -Werror -std=c11
 CXXFLAGS ?= -O2 -fPIC

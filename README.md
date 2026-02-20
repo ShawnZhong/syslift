@@ -1,5 +1,7 @@
 # syslift
 
+[![CI](https://github.com/ShawnZhong/syslift/actions/workflows/ci.yml/badge.svg)](https://github.com/ShawnZhong/syslift/actions/workflows/ci.yml)
+
 `syslift` turns load time into a trust gate. Most policy systems decide too late (after the process is already running) or require full sandbox machinery.
 
 `syslift` shifts policy to the loader boundary:
@@ -118,7 +120,6 @@ Policy:
 - `--hook` takes precedence over `--allow`/`--deny` for matching syscall numbers
 - in `--allow` mode, include your arch's `exit` syscall number if you want normal program termination (`93` on AArch64, `60` on x86_64)
 - arguments after `--` are passed to the loaded program as `argv[1..]` (`argv[0]` is `<elf-file>`)
-- `--hook` is currently supported only for AArch64 programs
 
 `--debug` prints parsed `.syslift` entries (`vals=[nr,arg1..arg6]` with `?` for unknown), per-site patch decisions, and entry address.
 
@@ -155,5 +156,5 @@ clang -O2 -Ithird_party/nolibc \
 - Supports `ET_EXEC` ELF64 little-endian binaries for AArch64 and x86_64.
 - Syscall sites are always recorded in `.syslift`; sites are rewritten to `-ENOSYS` by default, and non-constant nr register sites are rejected by the loader because `nr` is unknown.
 - Loader rejects binaries if it finds any raw syscall instruction in executable `PT_LOAD` segments before patching.
-- Hook mode (`--hook`) is implemented for AArch64 only.
+- Hook mode (`--hook`) is implemented for AArch64 and x86_64.
 - Loader enforces W^X at mapping time: writable load segments are mapped non-executable.
