@@ -18,6 +18,4 @@ void patch_syscall_to_hook(Program &parsed, const SysliftSyscallSite &site,
 
 uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry);
 
-void dump_program(const Program &parsed);
-
 } // namespace syslift

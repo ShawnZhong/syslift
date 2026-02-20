@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #ifndef MAP_FIXED_NOREPLACE
 #define MAP_FIXED_NOREPLACE MAP_FIXED
@@ -68,6 +69,17 @@ uint32_t encode_bl_insn(uintptr_t from, uintptr_t to) {
     throw std::runtime_error("hook target out of BL range");
   }
   return kBlInsnBase | (static_cast<uint32_t>(imm26) & 0x03FFFFFFu);
+}
+
+int32_t encode_x86_call_rel32(uint64_t from_site_vaddr, uintptr_t to) {
+  const int64_t from_next =
+      static_cast<int64_t>(from_site_vaddr) + static_cast<int64_t>(5);
+  const int64_t delta = static_cast<int64_t>(to) - from_next;
+  if (delta < std::numeric_limits<int32_t>::min() ||
+      delta > std::numeric_limits<int32_t>::max()) {
+    throw std::runtime_error("hook target out of x86 call range");
+  }
+  return static_cast<int32_t>(delta);
 }
 
 std::string hex_u64(uint64_t value) {
@@ -172,24 +184,34 @@ void patch_syscall_to_svc(Program &parsed, const SysliftSyscallSite &site) {
 
 void patch_syscall_to_hook(Program &parsed, const SysliftSyscallSite &site,
                            uintptr_t hook_stub_addr) {
-  if (parsed.arch != ProgramArch::AArch64) {
-    throw std::runtime_error("hook is only supported on AArch64");
+  if (parsed.arch == ProgramArch::AArch64) {
+    if ((site.site_vaddr & 0x3U) != 0U) {
+      throw std::runtime_error("invalid syscall site alignment");
+    }
+    auto [seg, off] =
+        find_executable_site(parsed, site.site_vaddr, kSyscallPatchSlotSize);
+    const uint32_t bl = encode_bl_insn(static_cast<uintptr_t>(site.site_vaddr),
+                                       hook_stub_addr);
+    const std::array<uint32_t, 2> hook_insns = {bl, 0xD503201Fu};
+    std::memcpy(seg->data.data() + off, hook_insns.data(), sizeof(hook_insns));
+    return;
   }
-  if ((site.site_vaddr & 0x3U) != 0U) {
-    throw std::runtime_error("invalid syscall site alignment");
+
+  if (parsed.arch == ProgramArch::X86_64) {
+    auto [seg, off] =
+        find_executable_site(parsed, site.site_vaddr, kSyscallPatchSlotSize);
+    std::array<uint8_t, kSyscallPatchSlotSize> hook_insns = {0xE8, 0, 0, 0, 0,
+                                                              0x90, 0x90, 0x90};
+    const int32_t rel32 = encode_x86_call_rel32(site.site_vaddr, hook_stub_addr);
+    std::memcpy(hook_insns.data() + 1, &rel32, sizeof(rel32));
+    std::memcpy(seg->data.data() + off, hook_insns.data(), hook_insns.size());
+    return;
   }
-  auto [seg, off] =
-      find_executable_site(parsed, site.site_vaddr, kSyscallPatchSlotSize);
-  const uint32_t bl = encode_bl_insn(static_cast<uintptr_t>(site.site_vaddr),
-                                     hook_stub_addr);
-  const std::array<uint32_t, 2> hook_insns = {bl, 0xD503201Fu};
-  std::memcpy(seg->data.data() + off, hook_insns.data(), sizeof(hook_insns));
+
+  throw std::runtime_error("unsupported arch");
 }
 
 uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {
-  if (parsed.arch != ProgramArch::AArch64) {
-    throw std::runtime_error("hook is only supported on AArch64");
-  }
   const long page_size_long = sysconf(_SC_PAGESIZE);
   if (page_size_long <= 0) {
     throw std::runtime_error("failed to query page size");
@@ -220,28 +242,68 @@ uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {
     throw std::runtime_error("failed to map hook stub near image");
   }
 
-  static constexpr std::array<uint32_t, 9> kHookStubInsns = {
-      0xD10043FFu, // sub sp, sp, #16
-      0xF90003FEu, // str x30, [sp]
-      0xAA0803E6u, // mov x6, x8
-      0xD10013C7u, // sub x7, x30, #4
-      0x580000B0u, // ldr x16, #0x14
-      0xD63F0200u, // blr x16
-      0xF94003FEu, // ldr x30, [sp]
-      0x910043FFu, // add sp, sp, #16
-      0xD65F03C0u, // ret
-  };
-  constexpr size_t kCodeSize = kHookStubInsns.size() * sizeof(uint32_t);
-  constexpr size_t kTotalSize = kCodeSize + sizeof(uint64_t);
-  if (kTotalSize > page_size) {
-    throw std::runtime_error("hook stub too large");
+  auto *stub = reinterpret_cast<uint8_t *>(stub_page);
+  size_t stub_size = 0;
+
+  if (parsed.arch == ProgramArch::AArch64) {
+    static constexpr std::array<uint32_t, 9> kHookStubInsns = {
+        0xD10043FFu, // sub sp, sp, #16
+        0xF90003FEu, // str x30, [sp]
+        0xAA0803E6u, // mov x6, x8
+        0xD10013C7u, // sub x7, x30, #4
+        0x580000B0u, // ldr x16, #0x14
+        0xD63F0200u, // blr x16
+        0xF94003FEu, // ldr x30, [sp]
+        0x910043FFu, // add sp, sp, #16
+        0xD65F03C0u, // ret
+    };
+    constexpr size_t kCodeSize = kHookStubInsns.size() * sizeof(uint32_t);
+    constexpr size_t kTotalSize = kCodeSize + sizeof(uint64_t);
+    if (kTotalSize > page_size) {
+      throw std::runtime_error("hook stub too large");
+    }
+    std::memcpy(stub, kHookStubInsns.data(), kCodeSize);
+    *reinterpret_cast<uint64_t *>(stub + kCodeSize) = hook_entry;
+    stub_size = kTotalSize;
+  } else if (parsed.arch == ProgramArch::X86_64) {
+    // push rdi; push rsi; push rdx; push r10; push r8; push r9
+    // load site_vaddr from return address, align stack, and call hook_entry(arg0..arg5, nr, site)
+    // restore preserved registers and return to patched site.
+    std::vector<uint8_t> code = {
+        0x57, 0x56, 0x52, 0x41, 0x52, 0x41, 0x50, 0x41, 0x51,
+        0x4C, 0x8B, 0x5C, 0x24, 0x30,       // mov r11, [rsp+0x30]
+        0x49, 0x83, 0xEB, 0x05,             // sub r11, 5
+        0x49, 0x89, 0xE2,                   // mov r10, rsp
+        0x48, 0x83, 0xE4, 0xF0,             // and rsp, -16
+        0x48, 0x83, 0xEC, 0x20,             // sub rsp, 32
+        0x48, 0x89, 0x04, 0x24,             // mov [rsp], rax
+        0x4C, 0x89, 0x5C, 0x24, 0x08,       // mov [rsp+8], r11
+        0x4C, 0x89, 0x54, 0x24, 0x10,       // mov [rsp+16], r10
+        0x49, 0x8B, 0x4A, 0x10,             // mov rcx, [r10+16]
+        0x49, 0xBB                          // movabs r11, imm64
+    };
+    const uint64_t hook_entry_u64 = static_cast<uint64_t>(hook_entry);
+    for (unsigned i = 0; i < 8; ++i) {
+      code.push_back(static_cast<uint8_t>((hook_entry_u64 >> (8u * i)) & 0xFFu));
+    }
+    const std::array<uint8_t, 19> kTail = {
+        0x41, 0xFF, 0xD3,                   // call r11
+        0x48, 0x8B, 0x64, 0x24, 0x10,       // mov rsp, [rsp+16]
+        0x41, 0x59, 0x41, 0x58, 0x41, 0x5A, // pop r9; pop r8; pop r10
+        0x5A, 0x5E, 0x5F, 0xC3              // pop rdx; pop rsi; pop rdi; ret
+    };
+    code.insert(code.end(), kTail.begin(), kTail.end());
+    if (code.size() > page_size) {
+      throw std::runtime_error("x86 hook stub too large");
+    }
+    std::memcpy(stub, code.data(), code.size());
+    stub_size = code.size();
+  } else {
+    throw std::runtime_error("unsupported arch");
   }
 
-  auto *stub = reinterpret_cast<uint8_t *>(stub_page);
-  std::memcpy(stub, kHookStubInsns.data(), kCodeSize);
-  *reinterpret_cast<uint64_t *>(stub + kCodeSize) = hook_entry;
   __builtin___clear_cache(reinterpret_cast<char *>(stub),
-                          reinterpret_cast<char *>(stub) + kTotalSize);
+                          reinterpret_cast<char *>(stub) + stub_size);
 
   if (mprotect(reinterpret_cast<void *>(stub_page), page_size,
                PROT_READ | PROT_EXEC) != 0) {
@@ -250,29 +312,6 @@ uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {
   }
 
   return stub_page;
-}
-
-void dump_program(const Program &parsed) {
-  const std::vector<SysliftSyscallSite> &sites = parsed.syscall_sites;
-  std::fprintf(stderr, ".syslift entries=%zu\n", sites.size());
-  for (size_t i = 0; i < sites.size(); ++i) {
-    const SysliftSyscallSite &site = sites[i];
-    std::fprintf(stderr, "table[%zu] site_vaddr=0x%" PRIx64 " vals=[", i,
-                 site.site_vaddr);
-    for (uint32_t value_index = 0; value_index < kSyscallValueCount;
-         ++value_index) {
-      if (value_index != 0) {
-        std::fprintf(stderr, ", ");
-      }
-      const uint32_t bit = 1u << value_index;
-      if ((site.known_mask & bit) == 0u) {
-        std::fprintf(stderr, "%3s", "?");
-      } else {
-        std::fprintf(stderr, "%3" PRIu64, site.values[value_index]);
-      }
-    }
-    std::fprintf(stderr, "]\n");
-  }
 }
 
 } // namespace syslift

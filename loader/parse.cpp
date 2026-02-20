@@ -4,7 +4,9 @@
 #include <sys/mman.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <inttypes.h>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -121,6 +123,29 @@ Program parse_program(const std::string &path) {
 
   parsed.syscall_sites = parse_syscall_table(reader);
   return parsed;
+}
+
+void dump_program(const Program &parsed) {
+  const std::vector<SysliftSyscallSite> &sites = parsed.syscall_sites;
+  std::fprintf(stderr, ".syslift entries=%zu\n", sites.size());
+  for (size_t i = 0; i < sites.size(); ++i) {
+    const SysliftSyscallSite &site = sites[i];
+    std::fprintf(stderr, "table[%zu] site_vaddr=0x%" PRIx64 " vals=[", i,
+                 site.site_vaddr);
+    for (uint32_t value_index = 0; value_index < kSyscallValueCount;
+         ++value_index) {
+      if (value_index != 0) {
+        std::fprintf(stderr, ", ");
+      }
+      const uint32_t bit = 1u << value_index;
+      if ((site.known_mask & bit) == 0u) {
+        std::fprintf(stderr, "%3s", "?");
+      } else {
+        std::fprintf(stderr, "%3" PRIu64, site.values[value_index]);
+      }
+    }
+    std::fprintf(stderr, "]\n");
+  }
 }
 
 } // namespace syslift

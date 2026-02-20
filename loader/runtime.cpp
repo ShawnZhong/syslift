@@ -172,6 +172,19 @@ long syslift_framework_hook(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(x8)
                : "memory", "cc");
   return static_cast<long>(x0);
+#elif defined(__x86_64__)
+  register uint64_t rax asm("rax") = sys_nr;
+  register uint64_t rdi asm("rdi") = arg0;
+  register uint64_t rsi asm("rsi") = arg1;
+  register uint64_t rdx asm("rdx") = arg2;
+  register uint64_t r10 asm("r10") = arg3;
+  register uint64_t r8 asm("r8") = arg4;
+  register uint64_t r9 asm("r9") = arg5;
+  asm volatile("syscall"
+               : "+r"(rax)
+               : "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10), "r"(r8), "r"(r9)
+               : "rcx", "r11", "memory", "cc");
+  return static_cast<long>(rax);
 #else
   (void)arg0;
   (void)arg1;

@@ -38,4 +38,6 @@ struct Program {
 
 Program parse_program(const std::string &path);
 
+void dump_program(const Program &parsed);
+
 } // namespace syslift
