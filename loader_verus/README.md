@@ -22,7 +22,7 @@ This installs:
 ## Verify
 
 ```bash
-make -C loader_verus verify
+make verus
 ```
 
 Expected output includes:
@@ -44,18 +44,18 @@ Quick sample (`write`):
 Direct binary:
 
 ```bash
-loader_verus <elf-file> <allow-csv>
+loader_verus/main <elf-file> <allow-csv>
 ```
 
 Example:
 
 ```bash
-loader_verus build/getpid 60,39
+loader_verus/main build/getpid 60,39
 ```
 
 ## Spec (Verus)
 
-The spec layer (`src/spec.rs`) describes security properties over parsed/patched programs:
+The spec layer (`spec.rs`) describes security properties over parsed/patched programs:
 
 - `raw_syscall_at`: x86_64 raw syscall opcode (`0x0f 0x05`) at a byte position.
 - `program_has_exec_raw_syscall`: executable segments contain at least one raw syscall.
@@ -71,7 +71,7 @@ The spec layer (`src/spec.rs`) describes security properties over parsed/patched
 
 ## How Verify Connects To Code
 
-`make -C loader_verus verify` runs Verus on `src/main.rs`, which includes `spec`, `parse`, `policy`, and `process`.
+`make verus` runs Verus on `loader_verus/main.rs`, verifies modules, and compiles the `loader_verus/main` binary.
 
 Main verified edges:
 - `parse::parse_program` ensures `phase_parsed_ok`.
@@ -79,13 +79,13 @@ Main verified edges:
 - `process::build_to_be_mapped_program` ensures `build_to_be_mapped_contract`.
 
 Trusted runtime boundary:
-- `src/main.rs` runtime mapping/jump path is ordinary Rust + `unsafe` and is intentionally trusted.
+- `main.rs` runtime mapping/jump path is ordinary Rust + `unsafe` and is intentionally trusted.
 - Verification focuses on parser/policy/patch planning/patch application properties.
 
 ## Proof and Exec split
 
-- `src/spec.rs`: properties, predicates, and small proof lemmas.
-- `src/parse.rs`, `src/policy.rs`, `src/process.rs`: executable Rust/Verus code with contracts.
+- `spec.rs`: properties, predicates, and small proof lemmas.
+- `parse.rs`, `policy.rs`, `process.rs`: executable Rust/Verus code with contracts.
 - `parse::parse_program` ensures `phase_parsed_ok` on success.
 - Program-based phase specs and APIs in `process.rs`:
   - phase predicates: `phase_parsed_ok`, `phase_rejected_ok`, `phase_planned_ok`, `phase_patched_ok`
@@ -103,10 +103,10 @@ The pipeline also rejects executable segment data overlap and applies syscall pa
 
 ## Code Layout
 
-- `src/model.rs`: constants and data model
-- `src/parse.rs`: verified ELF + `.syslift` parsing
-- `src/policy.rs`: verified allow-plan derivation
-- `src/process.rs`: reject + patch pipeline for to-be-mapped bytes
-- `src/spec.rs`: Verus spec predicates
-- `src/main.rs`: minimal entry point + trusted runtime boundary
+- `model.rs`: constants and data model
+- `parse.rs`: verified ELF + `.syslift` parsing
+- `policy.rs`: verified allow-plan derivation
+- `process.rs`: reject + patch pipeline for to-be-mapped bytes
+- `spec.rs`: Verus spec predicates
+- `main.rs`: minimal entry point + trusted runtime boundary
 - `install_deps.sh`: dependency/toolchain bootstrap

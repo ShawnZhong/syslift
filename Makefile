@@ -24,10 +24,10 @@ pass: $(PASS_SO)
 
 loader: $(LOADER_TOOL)
 
-loader_verus:
-	$(MAKE) -C loader_verus
+verus:
+	. "$$HOME/.cargo/env" && cd loader_verus && .toolchain/verus/verus main.rs --compile
 
-.PHONY: all pass loader clean samples
+.PHONY: all pass loader verus clean samples
 
 clean:
 	rm -rf $(BUILD_DIR)

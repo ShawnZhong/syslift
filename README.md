@@ -118,7 +118,7 @@ Current `loader_verus` scope:
 Run verification:
 
 ```bash
-make loader_verus-verify
+make verus
 ```
 
 

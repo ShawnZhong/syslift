@@ -2,7 +2,7 @@
 set -u
 
 make
-make -C loader_verus
+make verus
 
 NR_EXIT=60
 NR_WRITE=1
