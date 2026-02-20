@@ -1,4 +1,5 @@
-#include "program.h"
+#include "parse.h"
+#include "procress.h"
 #include "runtime.h"
 
 #include <cxxopts.hpp>
@@ -112,7 +113,7 @@ void patch_program_syscall(syslift::Program &program,
 }
 
 void execute_program(const Options &opts) {
-  syslift::Program program = syslift::parse_elf(opts.elf_path);
+  syslift::Program program = syslift::parse_program(opts.elf_path);
   if (!opts.hook.empty() && program.arch != syslift::ProgramArch::AArch64) {
     throw std::runtime_error("--hook is only supported for AArch64 programs");
   }
