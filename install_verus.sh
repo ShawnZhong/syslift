@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-TOOLCHAIN_DIR="$SCRIPT_DIR/.toolchain"
+VERUS_DIR=".verus"
 
 VERUS_VERSION="0.2026.02.15.61aa1bf"
 RUST_TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu"
 ARCHIVE="verus-${VERUS_VERSION}-x86-linux.zip"
 URL="https://github.com/verus-lang/verus/releases/download/release/${VERUS_VERSION}/${ARCHIVE}"
 
-ARCHIVE_PATH="$TOOLCHAIN_DIR/$ARCHIVE"
+mkdir -p "$VERUS_DIR"
 
-mkdir -p "$TOOLCHAIN_DIR"
+ARCHIVE_PATH="$VERUS_DIR/$ARCHIVE"
 curl -fsSL -o "$ARCHIVE_PATH" "$URL"
-unzip -qo "$ARCHIVE_PATH" -d "$TOOLCHAIN_DIR"
+unzip -qo "$ARCHIVE_PATH" -d "$VERUS_DIR"
 
 if [[ -f "$HOME/.cargo/env" ]]; then
   source "$HOME/.cargo/env"

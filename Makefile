@@ -14,20 +14,14 @@ BUILD_DIR := build
 include pass/build.mk
 include loader/build.mk
 include samples/build.mk
+include loader_verus/build.mk
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
+.PHONY: all
 all: pass loader samples
 
-pass: $(PASS_SO)
-
-loader: $(LOADER_TOOL)
-
-verus:
-	. "$$HOME/.cargo/env" && cd loader_verus && .toolchain/verus/verus main.rs --compile
-
-.PHONY: all pass loader verus clean samples
-
+.PHONY: clean
 clean:
 	rm -rf $(BUILD_DIR)

@@ -12,11 +12,11 @@ Scope:
 ## Setup
 
 ```bash
-./loader_verus/install_deps.sh
+./install_verus.sh
 ```
 
 This installs:
-- pinned Verus `0.2026.02.15.61aa1bf` (`x86-linux`) into `loader_verus/.toolchain/verus`
+- pinned Verus `0.2026.02.15.61aa1bf` (`x86-linux`) into `.verus/verus-x86-linux`
 - pinned Rust toolchain `1.93.0-x86_64-unknown-linux-gnu`
 
 ## Verify
@@ -109,4 +109,4 @@ The pipeline also rejects executable segment data overlap and applies syscall pa
 - `process.rs`: reject + patch pipeline for to-be-mapped bytes
 - `spec.rs`: Verus spec predicates
 - `main.rs`: minimal entry point + trusted runtime boundary
-- `install_deps.sh`: dependency/toolchain bootstrap
+- `install_verus.sh` (repo root): Verus/toolchain bootstrap

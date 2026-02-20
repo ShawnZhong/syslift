@@ -7,3 +7,6 @@ LOADER_CPPFLAGS := $(CPPFLAGS) -Ithird_party -Ithird_party/cxxopts
 
 $(LOADER_TOOL): $(LOADER_SRCS) $(LOADER_HDRS) $(LOADER_VENDOR_HDRS) | $(BUILD_DIR)
 	$(CXX) $(LOADER_CXXFLAGS) $(LOADER_CPPFLAGS) $(LOADER_SRCS) -o $@
+
+.PHONY: loader
+loader: $(LOADER_TOOL)

@@ -6,3 +6,6 @@ PASS_LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --system-libs --libs core 
 
 $(PASS_SO): $(PASS_SRC) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(PASS_LLVM_CXXFLAGS) -shared $< -o $@ $(PASS_LLVM_LDFLAGS)
+
+.PHONY: pass
+pass: $(PASS_SO)

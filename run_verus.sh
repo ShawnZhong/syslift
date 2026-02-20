@@ -19,6 +19,6 @@ run() {
   fi
 }
 
-run loader_verus/main build/write "$NR_EXIT,$NR_WRITE"
+run build/loader_verus build/write "$NR_EXIT,$NR_WRITE"
 
-run loader_verus/main build/write "$NR_EXIT"
+run build/loader_verus build/write "$NR_EXIT"

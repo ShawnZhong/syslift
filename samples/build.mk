@@ -7,4 +7,5 @@ SAMPLE_CLANG_FLAGS := -O2 -Ithird_party/nolibc -fpass-plugin=$(PASS_SO) -nostdli
 $(BUILD_DIR)/%: samples/%.c $(PASS_SO) | $(BUILD_DIR)
 	$(CC) $(SAMPLE_CLANG_FLAGS) $< -o $@
 
+.PHONY: samples
 samples: $(SAMPLE_BINS)
