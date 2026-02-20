@@ -103,6 +103,23 @@ This gives load-time verification and activation of kernel API surface without r
 - `pass/`: LLVM pass plugin (`build/libSysliftCollectSyscallsPass.so`)
 - `loader/`: load-time verifier/patcher (`build/loader`)
 - `samples/`: sample programs built with policy instrumentation
+- `loader_verus/`: parser-first verified loader prototype in Verus (x86_64-only)
+
+## Verus Prototype (`loader_verus`)
+
+`loader_verus` is an independent Verus implementation (no C++ bridge) focused on parsing first.
+
+Current `loader_verus` scope:
+- x86_64 only
+- allow-policy planning only
+- no hook mode
+- trusted runtime boundary (execution/mapping not verified yet)
+
+Run verification:
+
+```bash
+make loader_verus-verify
+```
 
 
 ## Loader Usage

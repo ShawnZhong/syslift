@@ -16,3 +16,6 @@ jobs:
 
       - name: Run demo script
         run: ./run.sh
+
+      - name: Verify loader_verus
+        run: make loader_verus-verify

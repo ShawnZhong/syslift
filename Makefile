@@ -24,6 +24,9 @@ pass: $(PASS_SO)
 
 loader: $(LOADER_TOOL)
 
+loader_verus:
+	$(MAKE) -C loader_verus
+
 .PHONY: all pass loader clean samples
 
 clean:
