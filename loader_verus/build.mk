@@ -7,3 +7,7 @@ $(LOADER_VERUS_OUT): $(LOADER_VERUS_RS) | $(BUILD_DIR)
 
 .PHONY: verus
 verus: $(LOADER_VERUS_OUT)
+
+.PHONY: verify
+verify: $(LOADER_VERUS_RS)
+	$(VERUS_BIN) loader_verus/main.rs

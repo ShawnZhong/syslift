@@ -1,34 +1,29 @@
 use vstd::prelude::*;
 
 use crate::model::*;
-use crate::policy::build_allow_patch_plan;
+use crate::reject::{
+    reject_if_exec_segments_overlap, reject_output_syscalls_not_in_plan,
+    reject_program_with_existing_syscall,
+};
 use crate::spec::{
     allow_plan_spec, build_to_be_mapped_contract, output_contains_only_allowed_syscalls,
-    output_syscalls_come_from_plan, phase_parsed_ok, phase_patched_ok, phase_planned_ok, phase_rejected_ok,
-    plan_matches_program, plan_respects_allow, program_has_exec_raw_syscall, raw_syscall_at, reject_raw_syscall_spec,
-    site_is_patched_by_plan,
+    output_syscalls_come_from_plan, phase_parsed_ok, phase_patched_ok, phase_planned_ok,
+    phase_rejected_ok, plan_matches_program, plan_respects_allow, program_has_exec_raw_syscall,
 };
 
 verus! {
 
-fn plan_has_patched_site(plan: &Vec<PatchDecision>, site: u64) -> (r: bool)
+fn contains_u64(values: &Vec<u64>, target: u64) -> (r: bool)
     ensures
-        r ==> site_is_patched_by_plan(plan@, site as int),
+        r ==> values@.contains(target),
 {
     let mut i: usize = 0;
-    while i < plan.len()
+    while i < values.len()
         invariant
-            i <= plan.len(),
-            forall|k: int|
-                0 <= k < i &&
-                (#[trigger] plan@[k]).should_patch &&
-                plan@[k].site_vaddr == site ==>
-                    site_is_patched_by_plan(plan@, site as int),
-        decreases plan.len() - i,
+            i <= values.len(),
+        decreases values.len() - i,
     {
-        let d = &plan[i];
-        if d.should_patch && d.site_vaddr == site {
-            assert(site_is_patched_by_plan(plan@, site as int));
+        if values[i] == target {
             return true;
         }
         i = i + 1;
@@ -36,6 +31,51 @@ fn plan_has_patched_site(plan: &Vec<PatchDecision>, site: u64) -> (r: bool)
     false
 }
 
+pub fn build_allow_patch_plan(program: &Program, allow: &Vec<u64>) -> (r: LoaderResult<Vec<PatchDecision>>)
+    ensures
+        match r {
+            Ok(ref plan) => plan_matches_program(program, plan@) && plan_respects_allow(allow, plan@),
+            Err(_) => true,
+        },
+{
+    proof {
+        assert(SYSLIFT_NR_BIT == 1u32);
+    }
+
+    let mut plan: Vec<PatchDecision> = Vec::new();
+
+    let mut i: usize = 0;
+    while i < program.syscall_sites.len()
+        invariant
+            i <= program.syscall_sites.len(),
+            plan.len() == i,
+            forall|k: int| 0 <= k < i ==> (#[trigger] plan@[k]).site_vaddr == program.syscall_sites@[k].site_vaddr,
+            forall|k: int| 0 <= k < i ==> (#[trigger] plan@[k]).sys_nr == program.syscall_sites@[k].values[0],
+            forall|k: int| 0 <= k < plan@.len() ==> (#[trigger] plan@[k]).should_patch ==> allow@.contains((#[trigger] plan@[k]).sys_nr),
+        decreases program.syscall_sites.len() - i,
+    {
+        let site = &program.syscall_sites[i];
+        if (site.known_mask & SYSLIFT_NR_BIT) == 0 {
+            return Err("unable to prove constant syscall number in .syslift");
+        }
+
+        let sys_nr = site.values[0];
+        let should_patch = contains_u64(allow, sys_nr);
+        if should_patch {
+            assert(allow@.contains(sys_nr));
+        }
+
+        plan.push(PatchDecision {
+            site_vaddr: site.site_vaddr,
+            sys_nr,
+            should_patch,
+        });
+
+        i = i + 1;
+    }
+
+    Ok(plan)
+}
 fn checked_add_usize(a: usize, b: usize) -> (r: LoaderResult<usize>) {
     if a > usize::MAX - b {
         Err("integer overflow")
@@ -43,15 +83,6 @@ fn checked_add_usize(a: usize, b: usize) -> (r: LoaderResult<usize>) {
         Ok(a + b)
     }
 }
-
-fn checked_add_u64(a: u64, b: u64) -> (r: LoaderResult<u64>) {
-    if a > u64::MAX - b {
-        Err("integer overflow")
-    } else {
-        Ok(a + b)
-    }
-}
-
 fn u64_to_usize(value: u64) -> (r: LoaderResult<usize>) {
     if value > usize::MAX as u64 {
         Err("value does not fit usize")
@@ -95,190 +126,6 @@ fn x86_patch_slot_byte(offset: usize) -> (r: u8)
         0x90
     }
 }
-
-fn has_raw_syscall(data: &Vec<u8>) -> (r: bool)
-    ensures
-        r ==> exists|pos: int| raw_syscall_at(data@, pos),
-        !r ==> forall|pos: int| !raw_syscall_at(data@, pos),
-{
-    if data.len() < 2 {
-        assert(forall|pos: int| !raw_syscall_at(data@, pos));
-        return false;
-    }
-
-    let mut i: usize = 0;
-    while i + 1 < data.len()
-        invariant
-            i < data.len(),
-            forall|pos: int| 0 <= pos < i ==> !raw_syscall_at(data@, pos),
-        decreases data.len() - i,
-    {
-        if data[i] == X86_SYSCALL_B0 && data[i + 1] == X86_SYSCALL_B1 {
-            assert(raw_syscall_at(data@, i as int));
-            assert(exists|pos: int| raw_syscall_at(data@, pos));
-            return true;
-        }
-        i = i + 1;
-    }
-
-    assert(i + 1 >= data.len());
-    assert(forall|pos: int| !raw_syscall_at(data@, pos));
-
-    false
-}
-
-pub fn reject_program_with_existing_syscall(program: &Program) -> (r: LoaderResult<()>)
-    ensures
-        reject_raw_syscall_spec(program, r),
-{
-    let mut i: usize = 0;
-    while i < program.segments.len()
-        invariant
-            i <= program.segments.len(),
-            forall|j: int, pos: int|
-                0 <= j < i &&
-                (program.segments@[j].flags & PF_X) != 0 ==>
-                    !(#[trigger] raw_syscall_at(program.segments@[j].data@, pos)),
-        decreases program.segments.len() - i,
-    {
-        let seg = &program.segments[i];
-        if (seg.flags & PF_X) != 0 {
-            let seg_has_raw = has_raw_syscall(&seg.data);
-            if seg_has_raw {
-                return Err("untrusted input: syscall instruction found in executable segment");
-            }
-            assert(forall|pos: int| !raw_syscall_at(seg.data@, pos));
-        }
-        i = i + 1;
-    }
-
-    assert(!program_has_exec_raw_syscall(program));
-    Ok(())
-}
-
-fn exec_segment_range(seg: &Segment) -> (r: LoaderResult<(u64, u64)>) {
-    let len_u64 = seg.data.len() as u64;
-    let end = match checked_add_u64(seg.vaddr, len_u64) {
-        Ok(v) => v,
-        Err(e) => return Err(e),
-    };
-    Ok((seg.vaddr, end))
-}
-
-fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> (r: bool) {
-    a_start < b_end && b_start < a_end
-}
-
-pub fn reject_if_exec_segments_overlap(program: &Program) -> (r: LoaderResult<()>) {
-    let mut i: usize = 0;
-    while i < program.segments.len()
-        invariant
-            i <= program.segments.len(),
-        decreases program.segments.len() - i,
-    {
-        let a = &program.segments[i];
-        if (a.flags & PF_X) == 0 {
-            i = i + 1;
-            continue;
-        }
-        let (a_start, a_end) = match exec_segment_range(a) {
-            Ok(v) => v,
-            Err(e) => return Err(e),
-        };
-
-        let mut j: usize = i + 1;
-        while j < program.segments.len()
-            invariant
-                i + 1 <= j <= program.segments.len(),
-            decreases program.segments.len() - j,
-        {
-            let b = &program.segments[j];
-            if (b.flags & PF_X) != 0 {
-                let (b_start, b_end) = match exec_segment_range(b) {
-                    Ok(v) => v,
-                    Err(e) => return Err(e),
-                };
-                if ranges_overlap(a_start, a_end, b_start, b_end) {
-                    return Err("executable segments overlap in data range");
-                }
-            }
-            j = j + 1;
-        }
-
-        i = i + 1;
-    }
-
-    Ok(())
-}
-
-fn segment_has_unplanned_raw_syscall(seg: &Segment, plan: &Vec<PatchDecision>) -> (r: bool)
-    ensures
-        !r ==> forall|pos: int|
-            raw_syscall_at(seg.data@, pos) ==> site_is_patched_by_plan(plan@, seg.vaddr as int + pos),
-{
-    if seg.data.len() < 2 {
-        return false;
-    }
-
-    let mut i: usize = 0;
-    while i + 1 < seg.data.len()
-        invariant
-            i < seg.data.len(),
-            forall|pos: int|
-                0 <= pos < i && raw_syscall_at(seg.data@, pos) ==>
-                    site_is_patched_by_plan(plan@, seg.vaddr as int + pos),
-        decreases seg.data.len() - i,
-    {
-        if seg.data[i] == X86_SYSCALL_B0 && seg.data[i + 1] == X86_SYSCALL_B1 {
-            if seg.vaddr > u64::MAX - i as u64 {
-                return true;
-            }
-            let site = seg.vaddr + i as u64;
-            if !plan_has_patched_site(plan, site) {
-                return true;
-            }
-            assert(site as int == seg.vaddr as int + i as int);
-            assert(site_is_patched_by_plan(plan@, seg.vaddr as int + i as int));
-        }
-        i = i + 1;
-    }
-
-    assert(i + 1 >= seg.data.len());
-    assert(forall|pos: int|
-        raw_syscall_at(seg.data@, pos) ==> site_is_patched_by_plan(plan@, seg.vaddr as int + pos));
-    false
-}
-
-fn reject_output_syscalls_not_in_plan(program: &Program, plan: &Vec<PatchDecision>) -> (r: LoaderResult<()>)
-    ensures
-        r.is_ok() ==> output_syscalls_come_from_plan(program, plan@),
-{
-    let mut i: usize = 0;
-    while i < program.segments.len()
-        invariant
-            i <= program.segments.len(),
-            forall|si: int, pos: int|
-                0 <= si < i &&
-                (program.segments@[si].flags & PF_X) != 0 &&
-                (#[trigger] raw_syscall_at(program.segments@[si].data@, pos)) ==>
-                    site_is_patched_by_plan(plan@, program.segments@[si].vaddr as int + pos),
-        decreases program.segments.len() - i,
-    {
-        let seg = &program.segments[i];
-        if (seg.flags & PF_X) != 0 {
-            if segment_has_unplanned_raw_syscall(seg, plan) {
-                return Err("patched image contains syscall outside allow-driven plan");
-            }
-            assert(forall|pos: int|
-                raw_syscall_at(seg.data@, pos) ==> site_is_patched_by_plan(plan@, seg.vaddr as int + pos));
-        }
-        i = i + 1;
-    }
-
-    assert(output_syscalls_come_from_plan(program, plan@));
-    Ok(())
-}
-
 fn site_in_exec_segment_data(program: &Program, site_vaddr: u64) -> (r: bool) {
     let mut i: usize = 0;
     while i < program.segments.len()
@@ -358,7 +205,6 @@ fn validate_plan_and_collect_sites(program: &Program, plan: &Vec<PatchDecision>)
 
     Ok(patch_sites)
 }
-
 fn make_zero_marks(len: usize) -> (r: Vec<u8>)
     ensures
         r@.len() == len,
@@ -425,7 +271,6 @@ fn build_patch_marks_for_segment(seg: &Segment, patch_sites: &Vec<u64>) -> (r: L
 
     Ok(marks)
 }
-
 fn patch_segment_one_pass(seg: &Segment, patch_marks: &Vec<u8>) -> (r: LoaderResult<Segment>) {
     if patch_marks.len() != seg.data.len() {
         return Err("invalid patch marks length");
@@ -511,7 +356,6 @@ fn apply_patch_plan(program: &mut Program, plan: &Vec<PatchDecision>) -> (r: Loa
 
     apply_patch_sites_one_pass(program, &patch_sites)
 }
-
 pub fn phase_reject_raw_syscalls(program: Program) -> (r: LoaderResult<Program>)
     requires
         phase_parsed_ok(&program),

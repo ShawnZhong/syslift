@@ -75,19 +75,19 @@ The spec layer (`spec.rs`) describes security properties over parsed/patched pro
 
 Main verified edges:
 - `parse::parse_program` ensures `phase_parsed_ok`.
-- `policy::build_allow_patch_plan` ensures `plan_matches_program` and `plan_respects_allow`.
-- `process::build_to_be_mapped_program` ensures `build_to_be_mapped_contract`.
+- `relocate::build_allow_patch_plan` ensures `plan_matches_program` and `plan_respects_allow`.
+- `relocate::build_to_be_mapped_program` ensures `build_to_be_mapped_contract`.
 
 Trusted runtime boundary:
 - `main.rs` runtime mapping/jump path is ordinary Rust + `unsafe` and is intentionally trusted.
-- Verification focuses on parser/policy/patch planning/patch application properties.
+- Verification focuses on parser/reject/policy/patch planning/patch application properties.
 
 ## Proof and Exec split
 
 - `spec.rs`: properties, predicates, and small proof lemmas.
-- `parse.rs`, `policy.rs`, `process.rs`: executable Rust/Verus code with contracts.
+- `parse.rs`, `reject.rs`, `relocate.rs`: executable Rust/Verus code with contracts.
 - `parse::parse_program` ensures `phase_parsed_ok` on success.
-- Program-based phase specs and APIs in `process.rs`:
+- Program-based phase specs and APIs in `relocate.rs`:
   - phase predicates: `phase_parsed_ok`, `phase_rejected_ok`, `phase_planned_ok`, `phase_patched_ok`
   - `phase_reject_raw_syscalls(program) -> program`
   - `phase_build_allow_plan(program, allow) -> (program, plan)`
@@ -96,7 +96,7 @@ Trusted runtime boundary:
 
 Top-level processing entrypoint:
 
-- `process::build_to_be_mapped_program(program, allow)` ensures on success:
+- `relocate::build_to_be_mapped_program(program, allow)` ensures on success:
   - `build_to_be_mapped_contract(&program, allow, &out_program, plan@)`
 
 The pipeline also rejects executable segment data overlap and applies syscall patching in one pass over segment bytes, using per-segment patch marks instead of per-byte linear membership scans.
@@ -105,8 +105,8 @@ The pipeline also rejects executable segment data overlap and applies syscall pa
 
 - `model.rs`: constants and data model
 - `parse.rs`: verified ELF + `.syslift` parsing
-- `policy.rs`: verified allow-plan derivation
-- `process.rs`: reject + patch pipeline for to-be-mapped bytes
+- `reject.rs`: verified rejection checks
+- `relocate.rs`: verified allow-plan + patch pipeline for to-be-mapped bytes
 - `spec.rs`: Verus spec predicates
 - `main.rs`: minimal entry point + trusted runtime boundary
 - `install_verus.sh` (repo root): Verus/toolchain bootstrap

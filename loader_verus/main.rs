@@ -1,7 +1,7 @@
 mod model;
 mod parse;
-mod policy;
-mod process;
+mod reject;
+mod relocate;
 mod spec;
 
 use std::env;
@@ -292,7 +292,7 @@ fn main() {
         Err(e) => panic!("parse failed: {}", e),
     };
 
-    let (patched_program, plan) = match process::build_to_be_mapped_program(program, &allow) {
+    let (patched_program, plan) = match relocate::build_to_be_mapped_program(program, &allow) {
         Ok(v) => v,
         Err(e) => panic!("processing failed: {}", e),
     };
