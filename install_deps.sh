@@ -5,10 +5,10 @@ PACKAGES=(
   bear
   build-essential
   ca-certificates
-  clang
-  lld
-  llvm
-  llvm-dev
+  clang-18
+  lld-18
+  llvm-18
+  llvm-18-dev
   make
   pkg-config
 )

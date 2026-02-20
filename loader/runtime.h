@@ -11,8 +11,6 @@ namespace syslift {
 
 uintptr_t map_image(const Program &program);
 
-void protect_image(const Program &program, uintptr_t load_bias);
-
 uintptr_t setup_runtime_stack(const std::string &arg0,
                               const std::vector<std::string> &args);
 
