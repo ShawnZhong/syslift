@@ -1,6 +1,7 @@
 #include "parse.h"
 #include "procress.h"
 #include "runtime.h"
+#include "syscall.h"
 
 #include <cxxopts.hpp>
 #include <inttypes.h>
@@ -24,16 +25,31 @@ struct Options {
   std::string elf_path;
 };
 
+std::vector<uint32_t> parse_syscall_names(
+    const std::vector<std::string> &names) {
+  std::vector<uint32_t> numbers;
+  numbers.reserve(names.size());
+  for (const std::string &name : names) {
+    const auto it = syslift::kSyscallNameToNumber.find(name);
+    if (it == syslift::kSyscallNameToNumber.end()) {
+      throw std::runtime_error("unknown syscall name: " + name);
+    }
+    numbers.push_back(it->second);
+  }
+  return numbers;
+}
+
 Options parse_options(int argc, char **argv) {
   cxxopts::Options parser(argv[0], "syslift loader");
   parser.positional_help("<elf-file> [-- <args...>]");
   parser.add_options()(
-      "hook", "Hook syscall numbers (comma-separated or repeated)",
-      cxxopts::value<std::vector<uint32_t>>())(
-      "allow", "Allow-list syscall numbers (comma-separated or repeated)",
-      cxxopts::value<std::vector<uint32_t>>())(
-      "deny", "Deny-list syscall numbers (comma-separated or repeated)",
-      cxxopts::value<std::vector<uint32_t>>())("debug", "Enable debug logging")(
+      "hook", "Hook syscall names (comma-separated or repeated)",
+      cxxopts::value<std::vector<std::string>>())(
+      "allow", "Allow-list syscall names (comma-separated or repeated)",
+      cxxopts::value<std::vector<std::string>>())(
+      "deny", "Deny-list syscall names (comma-separated or repeated)",
+      cxxopts::value<std::vector<std::string>>())(
+      "debug", "Enable debug logging")(
       "h,help", "Show help")(
       "elf", "ELF file", cxxopts::value<std::string>());
   parser.parse_positional({"elf"});
@@ -58,19 +74,20 @@ Options parse_options(int argc, char **argv) {
 
     Options opts{};
     if (result.count("hook") != 0) {
-      opts.hook = result["hook"].as<std::vector<uint32_t>>();
+      opts.hook = parse_syscall_names(result["hook"].as<std::vector<std::string>>());
     }
     if (allow_mode) {
-      opts.allow = result["allow"].as<std::vector<uint32_t>>();
+      opts.allow =
+          parse_syscall_names(result["allow"].as<std::vector<std::string>>());
     }
     if (deny_mode) {
-      opts.deny = result["deny"].as<std::vector<uint32_t>>();
+      opts.deny = parse_syscall_names(result["deny"].as<std::vector<std::string>>());
     }
     opts.exec_args = result.unmatched();
     opts.debug = result.count("debug") != 0;
     opts.elf_path = result["elf"].as<std::string>();
     return opts;
-  } catch (const cxxopts::exceptions::exception &e) {
+  } catch (const std::exception &e) {
     std::fprintf(stderr, "%s\n%s\n", e.what(), parser.help().c_str());
     std::exit(1);
   }

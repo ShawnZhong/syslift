@@ -33,7 +33,7 @@ Contract surface can include:
 Example output below is from AArch64.
 
 ```diff
-Running: `build/loader --debug --allow 93,172 build/getpid`
+Running: `build/loader --debug --allow exit,getpid build/getpid`
 .syslift entries=7
 table[0] site_vaddr=0x400280 vals=[172,   ?,   ?,   ?,   ?,   ?,   ?]
 table[1] site_vaddr=0x4002b8 vals=[ 93,   ?,   ?,   ?,   ?,   ?,   ?]
@@ -52,26 +52,26 @@ site_vaddr=0x4002cc sys_nr=172 action=PATCHED
 start executing: entry_pc=0x4002c0
 + exit=0
 
-Running: `build/loader --hook 172,93 build/getpid`
+Running: `build/loader --hook getpid,exit build/getpid`
 hook site=0x400280 nr=172 args=[281473172045776, 281473172045776, 3, 131106, 18446744073709551615, 0]
 hook site=0x4002b8 nr=93 args=[0, 281473172045776, 3, 131106, 18446744073709551615, 0]
 + exit=0
 
-Running: `build/loader --deny 172 build/getpid`
+Running: `build/loader --deny getpid build/getpid`
 - exit=1
 
 Running: `build/loader build/write`
 hello, world!
 + exit=0
 
-Running: `build/loader --deny 64 build/write`
+Running: `build/loader --deny write build/write`
 - exit=1
 
 Running: `build/loader build/print_pid`
 pid: <pid>
 + exit=0
 
-Running: `build/loader --deny 172 build/print_pid`
+Running: `build/loader --deny getpid build/print_pid`
 pid: -38
 - exit=1
 
@@ -125,17 +125,17 @@ make verus
 ## Loader Usage
 
 ```bash
-build/loader [--debug] [--hook <nr>...] [--allow <nr>...] [--deny <nr>...] <elf-file> [-- <args...>]
+build/loader [--debug] [--hook <syscall-name>...] [--allow <syscall-name>...] [--deny <syscall-name>...] <elf-file> [-- <args...>]
 ```
 
 Policy:
-- `--hook`: patch listed syscall numbers to a loader stub that dispatches to the framework hook handler
+- `--hook`: patch listed syscall names to a loader stub that dispatches to the framework hook handler
 - default (no flags): allow all recorded syscalls (patch all listed sites)
-- `--allow`: only patch listed syscall numbers
-- `--deny`: patch everything except listed syscall numbers
+- `--allow`: only patch listed syscall names
+- `--deny`: patch everything except listed syscall names
 - passing both `--allow` and `--deny` is an error
-- `--hook` takes precedence over `--allow`/`--deny` for matching syscall numbers
-- in `--allow` mode, include your arch's `exit` syscall number if you want normal program termination (`93` on AArch64, `60` on x86_64)
+- `--hook` takes precedence over `--allow`/`--deny` for matching syscalls
+- in `--allow` mode, include `exit` if you want normal program termination
 - arguments after `--` are passed to the loaded program as `argv[1..]` (`argv[0]` is `<elf-file>`)
 
 `--debug` prints parsed `.syslift` entries (`vals=[nr,arg1..arg6]` with `?` for unknown), per-site patch decisions, and entry address.
