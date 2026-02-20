@@ -16,8 +16,8 @@ Scope:
 ```
 
 This installs:
-- latest Verus `x86-linux` release into `loader_verus/.toolchain/verus`
-- the Rust toolchain required by that Verus release
+- pinned Verus `0.2026.02.15.61aa1bf` (`x86-linux`) into `loader_verus/.toolchain/verus`
+- pinned Rust toolchain `1.93.0-x86_64-unknown-linux-gnu`
 
 ## Verify
 

@@ -3,22 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 TOOLCHAIN_DIR="$SCRIPT_DIR/.toolchain"
-INSTALL_DIR="$TOOLCHAIN_DIR/verus"
 
-VERUS_VERSION=$(curl -fsSL https://api.github.com/repos/verus-lang/verus/releases/latest \
-  | sed -n 's/.*"tag_name":[[:space:]]*"release\/\([^"]*\)".*/\1/p' \
-  | head -n1)
+VERUS_VERSION="0.2026.02.15.61aa1bf"
+RUST_TOOLCHAIN="1.93.0-x86_64-unknown-linux-gnu"
 ARCHIVE="verus-${VERUS_VERSION}-x86-linux.zip"
 URL="https://github.com/verus-lang/verus/releases/download/release/${VERUS_VERSION}/${ARCHIVE}"
 
-TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT
+ARCHIVE_PATH="$TOOLCHAIN_DIR/$ARCHIVE"
 
 mkdir -p "$TOOLCHAIN_DIR"
-curl -fsSL -o "$TMP_DIR/$ARCHIVE" "$URL"
-unzip -q "$TMP_DIR/$ARCHIVE" -d "$TMP_DIR"
-rm -rf "$INSTALL_DIR"
-mv "$TMP_DIR/verus-x86-linux" "$INSTALL_DIR"
+curl -fsSL -o "$ARCHIVE_PATH" "$URL"
+unzip -qo "$ARCHIVE_PATH" -d "$TOOLCHAIN_DIR"
 
 if [[ -f "$HOME/.cargo/env" ]]; then
   source "$HOME/.cargo/env"
@@ -29,7 +24,6 @@ if ! command -v rustup >/dev/null 2>&1; then
 fi
 
 source "$HOME/.cargo/env"
-REQUIRED_TOOLCHAIN=$(sed -n 's/.*"toolchain":[[:space:]]*"\([^"]*\)".*/\1/p' "$INSTALL_DIR/version.json" | head -n1)
-rustup toolchain install "$REQUIRED_TOOLCHAIN"
+rustup toolchain install "$RUST_TOOLCHAIN"
 
-echo "installed verus=$VERUS_VERSION toolchain=$REQUIRED_TOOLCHAIN"
+echo "installed verus=$VERUS_VERSION toolchain=$RUST_TOOLCHAIN"
