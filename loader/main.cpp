@@ -1,5 +1,6 @@
 #include "parse.h"
-#include "procress.h"
+#include "reject.h"
+#include "relocate.h"
 #include "runtime.h"
 #include "syscall.h"
 
