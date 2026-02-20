@@ -99,7 +99,7 @@ void patch_program_syscall(syslift::Program &program,
     syslift::patch_syscall_to_hook(program, site, hook_stub_addr);
     action = "HOOKED";
   } else if (should_patch_syscall(opts, sys_nr)) {
-    syslift::patch_syscall_to_svc(program, site);
+    syslift::patch_syscall_to_insn(program, site);
     action = "PATCHED";
   } else {
     action = "ENOSYS";

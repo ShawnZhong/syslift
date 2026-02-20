@@ -26,15 +26,17 @@ namespace {
 
 constexpr std::array<uint8_t, 4> kAArch64SvcInsn = {0x01, 0x00, 0x00, 0xD4};
 constexpr std::array<uint8_t, 2> kX86SyscallInsn = {0x0F, 0x05};
-constexpr size_t kSyscallPatchSlotSize = 8;
-constexpr std::array<uint8_t, kSyscallPatchSlotSize> kAArch64PatchedSyscallInsn = {
+constexpr size_t kPatchedSyscallInsnSize = 8;
+constexpr std::array<uint8_t, kPatchedSyscallInsnSize>
+    kAArch64PatchedSyscallInsn = {
     0x01, 0x00, 0x00, 0xD4, 0x1F, 0x20, 0x03, 0xD5};
-constexpr std::array<uint8_t, kSyscallPatchSlotSize> kX86PatchedSyscallInsn = {
+constexpr std::array<uint8_t, kPatchedSyscallInsnSize> kX86PatchedSyscallInsn =
+    {
     0x0F, 0x05, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
-static_assert(kAArch64PatchedSyscallInsn.size() == kSyscallPatchSlotSize,
-              "AArch64 syscall patch slot must stay 8 bytes");
-static_assert(kX86PatchedSyscallInsn.size() == kSyscallPatchSlotSize,
-              "x86 syscall patch slot must stay 8 bytes");
+static_assert(kAArch64PatchedSyscallInsn.size() == kPatchedSyscallInsnSize,
+              "AArch64 patched syscall insn must stay 8 bytes");
+static_assert(kX86PatchedSyscallInsn.size() == kPatchedSyscallInsnSize,
+              "x86 patched syscall insn must stay 8 bytes");
 constexpr uint32_t kBlInsnBase = 0x94000000u;
 
 uintptr_t align_down(uintptr_t value, size_t align) {
@@ -88,6 +90,12 @@ std::string hex_u64(uint64_t value) {
   return os.str();
 }
 
+void append_u64_le(std::vector<uint8_t> &out, uint64_t value) {
+  for (unsigned i = 0; i < 8; ++i) {
+    out.push_back(static_cast<uint8_t>((value >> (8u * i)) & 0xFFu));
+  }
+}
+
 template <size_t N>
 std::optional<size_t> find_raw_syscall_offset(
     const Segment &segment, const std::array<uint8_t, N> &insn, size_t start_off,
@@ -106,17 +114,6 @@ std::optional<size_t> find_raw_syscall_offset(
     }
   }
   return std::nullopt;
-}
-
-const std::array<uint8_t, kSyscallPatchSlotSize> &
-patched_syscall_slot(ProgramArch arch) {
-  switch (arch) {
-  case ProgramArch::AArch64:
-    return kAArch64PatchedSyscallInsn;
-  case ProgramArch::X86_64:
-    return kX86PatchedSyscallInsn;
-  }
-  throw std::runtime_error("unsupported arch");
 }
 
 std::pair<Segment *, size_t> find_executable_site(Program &parsed,
@@ -172,14 +169,22 @@ void reject_if_unknown_syscall_nr(const SysliftSyscallSite &site) {
                            hex_u64(site.site_vaddr) + ")");
 }
 
-void patch_syscall_to_svc(Program &parsed, const SysliftSyscallSite &site) {
+void patch_syscall_to_insn(Program &parsed, const SysliftSyscallSite &site) {
   if (parsed.arch == ProgramArch::AArch64 && (site.site_vaddr & 0x3U) != 0U) {
     throw std::runtime_error("invalid syscall site alignment");
   }
+  const std::array<uint8_t, kPatchedSyscallInsnSize> *instruction = nullptr;
+  if (parsed.arch == ProgramArch::AArch64) {
+    instruction = &kAArch64PatchedSyscallInsn;
+  } else if (parsed.arch == ProgramArch::X86_64) {
+    instruction = &kX86PatchedSyscallInsn;
+  } else {
+    throw std::runtime_error("unsupported arch");
+  }
   auto [seg, off] =
-      find_executable_site(parsed, site.site_vaddr, kSyscallPatchSlotSize);
-  const auto &slot = patched_syscall_slot(parsed.arch);
-  std::memcpy(seg->data.data() + off, slot.data(), slot.size());
+      find_executable_site(parsed, site.site_vaddr, kPatchedSyscallInsnSize);
+  std::memcpy(seg->data.data() + off, instruction->data(),
+              instruction->size());
 }
 
 void patch_syscall_to_hook(Program &parsed, const SysliftSyscallSite &site,
@@ -189,7 +194,7 @@ void patch_syscall_to_hook(Program &parsed, const SysliftSyscallSite &site,
       throw std::runtime_error("invalid syscall site alignment");
     }
     auto [seg, off] =
-        find_executable_site(parsed, site.site_vaddr, kSyscallPatchSlotSize);
+        find_executable_site(parsed, site.site_vaddr, kPatchedSyscallInsnSize);
     const uint32_t bl = encode_bl_insn(static_cast<uintptr_t>(site.site_vaddr),
                                        hook_stub_addr);
     const std::array<uint32_t, 2> hook_insns = {bl, 0xD503201Fu};
@@ -199,9 +204,9 @@ void patch_syscall_to_hook(Program &parsed, const SysliftSyscallSite &site,
 
   if (parsed.arch == ProgramArch::X86_64) {
     auto [seg, off] =
-        find_executable_site(parsed, site.site_vaddr, kSyscallPatchSlotSize);
-    std::array<uint8_t, kSyscallPatchSlotSize> hook_insns = {0xE8, 0, 0, 0, 0,
-                                                              0x90, 0x90, 0x90};
+        find_executable_site(parsed, site.site_vaddr, kPatchedSyscallInsnSize);
+    std::array<uint8_t, kPatchedSyscallInsnSize> hook_insns = {
+        0xE8, 0, 0, 0, 0, 0x90, 0x90, 0x90};
     const int32_t rel32 = encode_x86_call_rel32(site.site_vaddr, hook_stub_addr);
     std::memcpy(hook_insns.data() + 1, &rel32, sizeof(rel32));
     std::memcpy(seg->data.data() + off, hook_insns.data(), hook_insns.size());
@@ -242,7 +247,7 @@ uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {
     throw std::runtime_error("failed to map hook stub near image");
   }
 
-  auto *stub = reinterpret_cast<uint8_t *>(stub_page);
+  auto *stub_bytes = reinterpret_cast<uint8_t *>(stub_page);
   size_t stub_size = 0;
 
   if (parsed.arch == ProgramArch::AArch64) {
@@ -262,48 +267,50 @@ uintptr_t install_hook_stub(const Program &parsed, uintptr_t hook_entry) {
     if (kTotalSize > page_size) {
       throw std::runtime_error("hook stub too large");
     }
-    std::memcpy(stub, kHookStubInsns.data(), kCodeSize);
-    *reinterpret_cast<uint64_t *>(stub + kCodeSize) = hook_entry;
+    std::memcpy(stub_bytes, kHookStubInsns.data(), kCodeSize);
+    *reinterpret_cast<uint64_t *>(stub_bytes + kCodeSize) = hook_entry;
     stub_size = kTotalSize;
   } else if (parsed.arch == ProgramArch::X86_64) {
-    // push rdi; push rsi; push rdx; push r10; push r8; push r9
-    // load site_vaddr from return address, align stack, and call hook_entry(arg0..arg5, nr, site)
-    // restore preserved registers and return to patched site.
-    std::vector<uint8_t> code = {
-        0x57, 0x56, 0x52, 0x41, 0x52, 0x41, 0x50, 0x41, 0x51,
-        0x4C, 0x8B, 0x5C, 0x24, 0x30,       // mov r11, [rsp+0x30]
-        0x49, 0x83, 0xEB, 0x05,             // sub r11, 5
-        0x49, 0x89, 0xE2,                   // mov r10, rsp
-        0x48, 0x83, 0xE4, 0xF0,             // and rsp, -16
-        0x48, 0x83, 0xEC, 0x20,             // sub rsp, 32
-        0x48, 0x89, 0x04, 0x24,             // mov [rsp], rax
-        0x4C, 0x89, 0x5C, 0x24, 0x08,       // mov [rsp+8], r11
-        0x4C, 0x89, 0x54, 0x24, 0x10,       // mov [rsp+16], r10
-        0x49, 0x8B, 0x4A, 0x10,             // mov rcx, [r10+16]
-        0x49, 0xBB                          // movabs r11, imm64
+    // Preserve syscall-arg registers, recover site_vaddr from return address,
+    // call hook_entry(arg0..arg5, nr, site), then restore and return.
+    const std::vector<uint8_t> kCodePrefix = {
+        0x57, 0x56, 0x52, 0x41, 0x52, 0x41, 0x50, // push rdi,rsi,rdx,r10,r8
+        0x41, 0x51,                               // push r9
+        0x4C, 0x8B, 0x5C, 0x24, 0x30,             // mov r11, [rsp+0x30]
+        0x49, 0x83, 0xEB, 0x05,                   // sub r11, 5
+        0x49, 0x89, 0xE2,                         // mov r10, rsp
+        0x48, 0x83, 0xE4, 0xF0,                   // and rsp, -16
+        0x48, 0x83, 0xEC, 0x20,                   // sub rsp, 32
+        0x48, 0x89, 0x04, 0x24,                   // mov [rsp], rax
+        0x4C, 0x89, 0x5C, 0x24, 0x08,             // mov [rsp+8], r11
+        0x4C, 0x89, 0x54, 0x24, 0x10,             // mov [rsp+16], r10
+        0x49, 0x8B, 0x4A, 0x10,                   // mov rcx, [r10+16]
+        0x49, 0xBB                                // movabs r11, imm64
     };
-    const uint64_t hook_entry_u64 = static_cast<uint64_t>(hook_entry);
-    for (unsigned i = 0; i < 8; ++i) {
-      code.push_back(static_cast<uint8_t>((hook_entry_u64 >> (8u * i)) & 0xFFu));
-    }
-    const std::array<uint8_t, 19> kTail = {
+    const std::vector<uint8_t> kCodeTail = {
         0x41, 0xFF, 0xD3,                   // call r11
         0x48, 0x8B, 0x64, 0x24, 0x10,       // mov rsp, [rsp+16]
         0x41, 0x59, 0x41, 0x58, 0x41, 0x5A, // pop r9; pop r8; pop r10
         0x5A, 0x5E, 0x5F, 0xC3              // pop rdx; pop rsi; pop rdi; ret
     };
-    code.insert(code.end(), kTail.begin(), kTail.end());
+
+    std::vector<uint8_t> code;
+    code.reserve(kCodePrefix.size() + sizeof(uint64_t) + kCodeTail.size());
+    code.insert(code.end(), kCodePrefix.begin(), kCodePrefix.end());
+    append_u64_le(code, static_cast<uint64_t>(hook_entry));
+    code.insert(code.end(), kCodeTail.begin(), kCodeTail.end());
+
     if (code.size() > page_size) {
       throw std::runtime_error("x86 hook stub too large");
     }
-    std::memcpy(stub, code.data(), code.size());
+    std::memcpy(stub_bytes, code.data(), code.size());
     stub_size = code.size();
   } else {
     throw std::runtime_error("unsupported arch");
   }
 
-  __builtin___clear_cache(reinterpret_cast<char *>(stub),
-                          reinterpret_cast<char *>(stub) + stub_size);
+  __builtin___clear_cache(reinterpret_cast<char *>(stub_bytes),
+                          reinterpret_cast<char *>(stub_bytes) + stub_size);
 
   if (mprotect(reinterpret_cast<void *>(stub_page), page_size,
                PROT_READ | PROT_EXEC) != 0) {
