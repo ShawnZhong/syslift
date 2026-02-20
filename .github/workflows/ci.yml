@@ -11,9 +11,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: ./install_deps.sh
-
       - name: Build
         run: make -j"$(nproc)"
 
